@@ -16,16 +16,30 @@ struct GlassApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var overlayWindows: [String: NSWindow] = [:]
+    private var overlayOffsets: [String: CGSize] = [:]
     private let viewModel = GlassViewModel()
     private var screenObserver: NSObjectProtocol?
     private var hotKeyHandler: EventHandlerRef?
     private var openHotKeyRef: EventHotKeyRef?
     private var closeHotKeyRef: EventHotKeyRef?
+    private var responseHotKeyRef: EventHotKeyRef?
+    private var moveUpHotKeyRef: EventHotKeyRef?
+    private var moveLeftHotKeyRef: EventHotKeyRef?
+    private var moveDownHotKeyRef: EventHotKeyRef?
+    private var moveRightHotKeyRef: EventHotKeyRef?
     private var localKeyMonitor: Any?
 
     private let hotKeySignature = fourCharCode("GLAS")
     private let openHotKeyIdentifier: UInt32 = 1
     private let closeHotKeyIdentifier: UInt32 = 2
+    private let responseHotKeyIdentifier: UInt32 = 3
+    private let moveUpHotKeyIdentifier: UInt32 = 4
+    private let moveLeftHotKeyIdentifier: UInt32 = 5
+    private let moveDownHotKeyIdentifier: UInt32 = 6
+    private let moveRightHotKeyIdentifier: UInt32 = 7
+    private let requiredHotKeyModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
+    private let carbonHotKeyModifiers: UInt32 = UInt32(controlKey | optionKey | cmdKey)
+    private let overlayNudgeStep: CGFloat = 48
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -110,17 +124,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == self.requiredHotKeyModifiers,
                   let characters = event.charactersIgnoringModifiers?.lowercased() else {
                 return event
             }
 
             switch characters {
-            case "u":
+            case "e":
                 self.openOverlayOnCurrentScreen(triggerAnalysis: true, activateApp: false)
                 return nil
-            case "i":
+            case "q":
                 self.closeOverlayOnCurrentScreen()
+                return nil
+            case "r":
+                self.requestAIResponseForCurrentMeeting()
+                return nil
+            case "w":
+                self.moveOverlayOnCurrentScreen(deltaX: 0, deltaY: self.overlayNudgeStep)
+                return nil
+            case "a":
+                self.moveOverlayOnCurrentScreen(deltaX: -self.overlayNudgeStep, deltaY: 0)
+                return nil
+            case "s":
+                self.moveOverlayOnCurrentScreen(deltaX: 0, deltaY: -self.overlayNudgeStep)
+                return nil
+            case "d":
+                self.moveOverlayOnCurrentScreen(deltaX: self.overlayNudgeStep, deltaY: 0)
                 return nil
             default:
                 return event
@@ -128,14 +157,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         openHotKeyRef = registerHotKey(
-            keyCode: UInt32(kVK_ANSI_U),
-            modifiers: UInt32(cmdKey),
+            keyCode: UInt32(kVK_ANSI_E),
+            modifiers: carbonHotKeyModifiers,
             identifier: openHotKeyIdentifier
         )
         closeHotKeyRef = registerHotKey(
-            keyCode: UInt32(kVK_ANSI_I),
-            modifiers: UInt32(cmdKey),
+            keyCode: UInt32(kVK_ANSI_Q),
+            modifiers: carbonHotKeyModifiers,
             identifier: closeHotKeyIdentifier
+        )
+        responseHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_R),
+            modifiers: carbonHotKeyModifiers,
+            identifier: responseHotKeyIdentifier
+        )
+        moveUpHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_W),
+            modifiers: carbonHotKeyModifiers,
+            identifier: moveUpHotKeyIdentifier
+        )
+        moveLeftHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_A),
+            modifiers: carbonHotKeyModifiers,
+            identifier: moveLeftHotKeyIdentifier
+        )
+        moveDownHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_S),
+            modifiers: carbonHotKeyModifiers,
+            identifier: moveDownHotKeyIdentifier
+        )
+        moveRightHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_D),
+            modifiers: carbonHotKeyModifiers,
+            identifier: moveRightHotKeyIdentifier
         )
     }
 
@@ -160,6 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             openOverlayOnCurrentScreen(triggerAnalysis: true, activateApp: false)
         case closeHotKeyIdentifier:
             closeOverlayOnCurrentScreen()
+        case responseHotKeyIdentifier:
+            requestAIResponseForCurrentMeeting()
+        case moveUpHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: overlayNudgeStep)
+        case moveLeftHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: -overlayNudgeStep, deltaY: 0)
+        case moveDownHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: -overlayNudgeStep)
+        case moveRightHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: overlayNudgeStep, deltaY: 0)
         default:
             break
         }
@@ -197,6 +261,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func requestAIResponseForCurrentMeeting() {
+        if let screen = currentScreen() {
+            viewModel.setFocusedDisplayID(displayID(for: screen))
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.viewModel.refreshCopilotNow()
+        }
+    }
+
     private func closeOverlayOnCurrentScreen() {
         guard let screen = currentScreen() else {
             destroyOverlayWindows()
@@ -223,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 window.close()
             }
             overlayWindows.removeValue(forKey: id)
+            overlayOffsets.removeValue(forKey: id)
         }
     }
 
@@ -248,6 +324,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func applyStealthMode(to window: NSWindow) {
         guard NSApp.windows.contains(window) else { return }
         window.sharingType = .none
+    }
+
+    private func moveOverlayOnCurrentScreen(deltaX: CGFloat, deltaY: CGFloat) {
+        guard let screen = currentScreen() else { return }
+        let id = screenID(for: screen)
+        guard let window = overlayWindows[id] else { return }
+
+        let baseFrame = defaultFrame(for: screen)
+        var frame = frame(for: screen)
+        frame.origin.x += deltaX
+        frame.origin.y += deltaY
+
+        let visibleFrame = screen.visibleFrame
+        frame.origin.x = min(max(frame.origin.x, visibleFrame.minX), visibleFrame.maxX - frame.width)
+        frame.origin.y = min(max(frame.origin.y, visibleFrame.minY), visibleFrame.maxY - frame.height)
+
+        overlayOffsets[id] = CGSize(
+            width: frame.origin.x - baseFrame.origin.x,
+            height: frame.origin.y - baseFrame.origin.y
+        )
+        window.setFrame(frame, display: true)
+        present(window, activateApp: false)
     }
 
     private func present(_ window: NSWindow, activateApp: Bool) {
@@ -303,6 +401,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func frame(for screen: NSScreen) -> NSRect {
+        let id = screenID(for: screen)
+        let base = defaultFrame(for: screen)
+        let offset = overlayOffsets[id] ?? .zero
+        var frame = base.offsetBy(dx: offset.width, dy: offset.height)
+        let visibleFrame = screen.visibleFrame
+        frame.origin.x = min(max(frame.origin.x, visibleFrame.minX), visibleFrame.maxX - frame.width)
+        frame.origin.y = min(max(frame.origin.y, visibleFrame.minY), visibleFrame.maxY - frame.height)
+        return frame
+    }
+
+    private func defaultFrame(for screen: NSScreen) -> NSRect {
         let visible = screen.visibleFrame
         let horizontalInset: CGFloat = 24
         let verticalInset: CGFloat = 26

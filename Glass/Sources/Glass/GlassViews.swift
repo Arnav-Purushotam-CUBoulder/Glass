@@ -93,7 +93,7 @@ struct GlassRootView: View {
 
             ControlBarAction(
                 title: "Ask AI",
-                keyHints: ["⌘", "↵"]
+                keyHints: ["⌃", "⌥", "⌘", "R"]
             ) {
                 Task {
                     await model.refreshCopilotNow()
@@ -102,7 +102,7 @@ struct GlassRootView: View {
 
             ControlBarAction(
                 title: isTranscriptVisible ? "Hide transcript" : "Show transcript",
-                keyHints: ["⌘", "\\"]
+                keyHints: []
             ) {
                 withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
                     isTranscriptVisible.toggle()
@@ -616,9 +616,11 @@ struct ControlBarAction: View {
                 Text(title)
                     .foregroundStyle(.white.opacity(0.96))
 
-                HStack(spacing: 6) {
-                    ForEach(keyHints, id: \.self) { hint in
-                        KeyCapView(title: hint)
+                if !keyHints.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(keyHints, id: \.self) { hint in
+                            KeyCapView(title: hint)
+                        }
                     }
                 }
             }

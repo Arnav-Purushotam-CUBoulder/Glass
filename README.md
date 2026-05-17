@@ -57,12 +57,17 @@ open -a /Applications/Glass.app
 
 ## Controls
 
-- `⌘U`: open Glass on the currently active screen/space and analyze that screen
-- `⌘I`: hide Glass from the current screen/space without quitting the app
-- `⌘↵`: force an immediate AI refresh
-- `⌘\`: show or hide the transcript
+- `⌃⌥⌘E`: open Glass on the currently active screen/space and collect context for that screen
+- `⌃⌥⌘Q`: hide Glass from the current screen/space without quitting the app
+- `⌃⌥⌘R`: generate an AI response from the meeting context collected so far
+- `⌃⌥⌘W`: move Glass up
+- `⌃⌥⌘A`: move Glass left
+- `⌃⌥⌘S`: move Glass down
+- `⌃⌥⌘D`: move Glass right
 - `Settings → Request Screen Access`: ask macOS for Screen Recording permission
 - `Settings → Relaunch Glass`: restart the app after granting Screen Recording so the permission takes effect
+
+Glass keeps collecting transcript and screen context continuously during a meeting, but it only calls OpenAI for a reply when you explicitly press `⌃⌥⌘R` or click `Ask AI`.
 
 ## Permissions
 

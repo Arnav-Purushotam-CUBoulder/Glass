@@ -30,7 +30,6 @@ final class GlassViewModel: ObservableObject {
 
     private var microphoneTranscriber: OpenAIRealtimeTranscriber?
     private var systemAudioTranscriber: OpenAIRealtimeTranscriber?
-    private var copilotRefreshTask: Task<Void, Never>?
     private var screenScanLoopTask: Task<Void, Never>?
     private var focusedDisplayID: CGDirectDisplayID?
     private var hasRequestedScreenAccessThisLaunch = false
@@ -168,17 +167,11 @@ final class GlassViewModel: ObservableObject {
     func selectTextModel(_ model: OpenAITextModel) {
         selectedTextModel = model
         saveModelPreferences(showStatus: true)
-        if isMeetingActive, hasCopilotContext {
-            scheduleCopilotRefresh()
-        }
     }
 
     func selectReasoningEffort(_ effort: OpenAIReasoningEffort) {
         selectedReasoningEffort = effort
         saveModelPreferences(showStatus: true)
-        if isMeetingActive, hasCopilotContext {
-            scheduleCopilotRefresh()
-        }
     }
 
     func relaunchApplication() {
@@ -216,13 +209,11 @@ final class GlassViewModel: ObservableObject {
             refreshPermissions()
         }
 
-        await captureScreenContext(silent: false, refreshCopilot: false)
+        await captureScreenContext(silent: false)
 
         guard errorText == nil else { return }
 
-        if hasCopilotContext {
-            await refreshCopilotNow()
-        } else {
+        if latestScreenInsight?.hasRecognizedText != true {
             statusText = "No screen text found yet"
         }
     }
@@ -235,7 +226,7 @@ final class GlassViewModel: ObservableObject {
         }
 
         if !hasCopilotContext {
-            await captureScreenContext(silent: true, refreshCopilot: false)
+            await captureScreenContext(silent: true)
         }
 
         guard hasCopilotContext else {
@@ -272,7 +263,7 @@ final class GlassViewModel: ObservableObject {
         isRefreshingCopilot = false
     }
 
-    func captureScreenContext(silent: Bool = false, refreshCopilot: Bool = true) async {
+    func captureScreenContext(silent: Bool = false) async {
         guard !isScanningScreen else { return }
 
         isScanningScreen = true
@@ -287,9 +278,6 @@ final class GlassViewModel: ObservableObject {
             screenAccessConfigured = true
             if !silent {
                 statusText = "Screen context captured"
-            }
-            if refreshCopilot {
-                scheduleCopilotRefresh()
             }
         } catch {
             let preflightAllowed = CGPreflightScreenCaptureAccess()
@@ -313,7 +301,6 @@ final class GlassViewModel: ObservableObject {
     }
 
     func stopImmediatelyForQuit() {
-        copilotRefreshTask?.cancel()
         screenScanLoopTask?.cancel()
         microphoneCapture.stop()
         systemAudioCapture.stop()
@@ -382,18 +369,13 @@ final class GlassViewModel: ObservableObject {
 
         if screenAccessConfigured {
             statusText = "Scanning screen and listening live"
-            await captureScreenContext(silent: true, refreshCopilot: false)
+            await captureScreenContext(silent: true)
         } else {
             statusText = "Listening live"
         }
 
         startAutomaticScreenScanLoop()
-
-        if hasCopilotContext {
-            await refreshCopilotNow()
-        } else {
-            statusText = "Listening live"
-        }
+        statusText = screenAccessConfigured ? "Meeting context live" : "Listening live"
     }
 
     private func stopMeeting() {
@@ -487,19 +469,8 @@ final class GlassViewModel: ObservableObject {
             TranscriptSegment(source: source, text: trimmed, date: Date())
         )
 
-        if transcriptSegments.count > 80 {
-            transcriptSegments.removeFirst(transcriptSegments.count - 80)
-        }
-
-        scheduleCopilotRefresh()
-    }
-
-    private func scheduleCopilotRefresh() {
-        copilotRefreshTask?.cancel()
-        copilotRefreshTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_100_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.refreshCopilotNow()
+        if transcriptSegments.count > 2_000 {
+            transcriptSegments.removeFirst(transcriptSegments.count - 2_000)
         }
     }
 

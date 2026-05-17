@@ -11,19 +11,23 @@ final class GlassViewModel: ObservableObject {
     @Published var liveMicrophoneText = ""
     @Published var liveSystemText = ""
     @Published var copilotAdvice = CopilotAdvice.placeholder
+    @Published var automaticCopilotAdvice = CopilotAdvice.automaticPlaceholder
     @Published var copilotHistory: [CopilotResponseEntry] = []
     @Published var latestScreenInsight: ScreenInsight?
     @Published var errorText: String?
     @Published var isMeetingActive = false
     @Published var sessionStartedAt: Date?
     @Published var isRefreshingCopilot = false
+    @Published var automaticCopilotUpdatedAt: Date?
     @Published var isScanningScreen = false
     @Published var microphoneStatus = "Checking"
     @Published var systemAudioStatus = "Waiting"
-    @Published var screenStatus = "Stealth On"
+    @Published var screenStatus = "Hidden from Capture"
     @Published var screenAccessConfigured = false
     @Published var selectedTextModel: OpenAITextModel = GlassPreferences.loadTextModel()
     @Published var selectedReasoningEffort: OpenAIReasoningEffort = GlassPreferences.loadReasoningEffort()
+    @Published private(set) var copilotScrollToken = 0
+    @Published private(set) var copilotScrollDelta: CGFloat = 0
 
     private let microphoneCapture = MicrophoneCaptureService()
     private let systemAudioCapture = SystemAudioCaptureService()
@@ -31,12 +35,30 @@ final class GlassViewModel: ObservableObject {
     private var microphoneTranscriber: OpenAIRealtimeTranscriber?
     private var systemAudioTranscriber: OpenAIRealtimeTranscriber?
     private var screenScanLoopTask: Task<Void, Never>?
+    private var automaticCopilotLoopTask: Task<Void, Never>?
     private var focusedDisplayID: CGDirectDisplayID?
     private var hasRequestedScreenAccessThisLaunch = false
+    private var isRefreshingAutomaticCopilot = false
 
     init() {
         microphoneCapture.onPCMData = { [weak self] data in
             self?.microphoneTranscriber?.appendPCMData(data)
+        }
+
+        microphoneCapture.onConfigurationChanged = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.microphoneStatus = "Live"
+                if self?.isMeetingActive == true {
+                    self?.statusText = "Audio input updated"
+                }
+            }
+        }
+
+        microphoneCapture.onError = { [weak self] error in
+            Task { @MainActor [weak self] in
+                self?.microphoneStatus = "Error"
+                self?.errorText = self?.explainOpenAIError(error)
+            }
         }
 
         systemAudioCapture.onPCMData = { [weak self] data in
@@ -70,6 +92,52 @@ final class GlassViewModel: ObservableObject {
         return "\(selectedTextModel.title) · Thinking \(effort)"
     }
 
+    var automaticResponseText: String {
+        let advice = automaticCopilotAdvice
+        let segments = [advice.whatToSayNext, advice.summary]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return segments.isEmpty ? "Automatic responses will appear here once there is enough live context." : segments.joined(separator: "\n\n")
+    }
+
+    var automaticResponseTimeLabel: String {
+        guard let automaticCopilotUpdatedAt else { return "AUTO" }
+        return automaticCopilotUpdatedAt.formatted(date: .omitted, time: .shortened).uppercased()
+    }
+
+    var contextFeedText: String {
+        var blocks: [String] = []
+
+        let liveMeeting = liveSystemText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !liveMeeting.isEmpty {
+            blocks.append("[Meeting live]\n\(liveMeeting)")
+        }
+
+        let liveMic = liveMicrophoneText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !liveMic.isEmpty {
+            blocks.append("[Your mic live]\n\(liveMic)")
+        }
+
+        if let latestScreenInsight,
+           latestScreenInsight.hasRecognizedText {
+            let stamp = latestScreenInsight.capturedAt.formatted(date: .omitted, time: .shortened)
+            let trimmed = latestScreenInsight.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            blocks.append("[Screen OCR \(stamp)]\n\(trimmed)")
+        }
+
+        let recentSegments = transcriptSegments.suffix(4).map { segment in
+            "[\(segment.source.title) \(segment.timeLabel)]\n\(segment.text)"
+        }
+
+        if !recentSegments.isEmpty {
+            blocks.append(contentsOf: recentSegments)
+        }
+
+        return blocks.isEmpty
+            ? "New OCR and STT text will appear here the moment Glass adds it to meeting context."
+            : blocks.joined(separator: "\n\n")
+    }
+
     var hasCopilotContext: Bool {
         !transcriptSegments.isEmpty ||
         !liveMicrophoneText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
@@ -95,7 +163,7 @@ final class GlassViewModel: ObservableObject {
         systemAudioStatus = isMeetingActive
             ? (screenAccessConfigured ? systemAudioStatus : "Mic Only")
             : (screenAccessConfigured ? "Ready" : "Needs Access")
-        screenStatus = "Stealth On"
+        screenStatus = "Hidden from Capture"
     }
 
     func requestScreenRecordingAccess() {
@@ -218,7 +286,7 @@ final class GlassViewModel: ObservableObject {
         }
     }
 
-    func refreshCopilotNow() async {
+    func refreshCopilotNow(preferredCodeLanguage: CopilotCodeLanguage = .python) async {
         guard hasAPIKey else {
             errorText = "Add an OpenAI API key to enable live transcription and live copilot replies."
             statusText = "Missing OpenAI key"
@@ -242,14 +310,12 @@ final class GlassViewModel: ObservableObject {
         do {
             let advice = try await OpenAICopilotService.generateAdvice(
                 transcriptSegments: transcriptSegments,
-                partials: [
-                    .microphone: liveMicrophoneText,
-                    .systemAudio: liveSystemText
-                ],
+                partials: currentLivePartials,
                 screenInsight: latestScreenInsight,
                 apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                 model: selectedTextModel,
-                reasoningEffort: selectedReasoningEffort
+                reasoningEffort: selectedReasoningEffort,
+                preferredCodeLanguage: preferredCodeLanguage
             )
 
             copilotAdvice = advice
@@ -261,6 +327,12 @@ final class GlassViewModel: ObservableObject {
         }
 
         isRefreshingCopilot = false
+    }
+
+    func requestCopilotScroll(_ direction: CopilotScrollDirection) {
+        guard !copilotHistory.isEmpty else { return }
+        copilotScrollDelta = direction == .up ? -56 : 56
+        copilotScrollToken &+= 1
     }
 
     func captureScreenContext(silent: Bool = false) async {
@@ -302,6 +374,7 @@ final class GlassViewModel: ObservableObject {
 
     func stopImmediatelyForQuit() {
         screenScanLoopTask?.cancel()
+        automaticCopilotLoopTask?.cancel()
         microphoneCapture.stop()
         systemAudioCapture.stop()
         microphoneTranscriber?.stop()
@@ -334,8 +407,12 @@ final class GlassViewModel: ObservableObject {
         liveMicrophoneText = ""
         liveSystemText = ""
         copilotHistory.removeAll()
+        copilotScrollToken = 0
+        copilotScrollDelta = 0
         latestScreenInsight = nil
         copilotAdvice = CopilotAdvice.placeholder
+        automaticCopilotAdvice = CopilotAdvice.automaticPlaceholder
+        automaticCopilotUpdatedAt = nil
         errorText = nil
         isMeetingActive = true
         sessionStartedAt = Date()
@@ -375,12 +452,16 @@ final class GlassViewModel: ObservableObject {
         }
 
         startAutomaticScreenScanLoop()
+        startAutomaticCopilotLoop()
+        await refreshAutomaticCopilotIfPossible()
         statusText = screenAccessConfigured ? "Meeting context live" : "Listening live"
     }
 
     private func stopMeeting() {
         stopImmediatelyForQuit()
         refreshPermissions()
+        automaticCopilotAdvice = CopilotAdvice.automaticPlaceholder
+        automaticCopilotUpdatedAt = nil
         statusText = "Session stopped"
     }
 
@@ -487,6 +568,18 @@ final class GlassViewModel: ObservableObject {
         }
     }
 
+    private func startAutomaticCopilotLoop() {
+        automaticCopilotLoopTask?.cancel()
+
+        automaticCopilotLoopTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                guard !Task.isCancelled, self.isMeetingActive else { break }
+                await self.refreshAutomaticCopilotIfPossible()
+            }
+        }
+    }
+
     private func persistModelPreferences() {
         GlassPreferences.saveTextModel(selectedTextModel)
         GlassPreferences.saveReasoningEffort(selectedReasoningEffort)
@@ -510,9 +603,46 @@ final class GlassViewModel: ObservableObject {
             )
         )
 
+        copilotScrollToken &+= 1
+
         if copilotHistory.count > 60 {
             copilotHistory.removeFirst(copilotHistory.count - 60)
         }
+    }
+
+    private func refreshAutomaticCopilotIfPossible() async {
+        guard isMeetingActive, hasAPIKey, hasCopilotContext, !isRefreshingAutomaticCopilot else { return }
+
+        isRefreshingAutomaticCopilot = true
+        defer { isRefreshingAutomaticCopilot = false }
+
+        do {
+            let advice = try await OpenAICopilotService.generateAdvice(
+                transcriptSegments: transcriptSegments,
+                partials: currentLivePartials,
+                screenInsight: latestScreenInsight,
+                apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: selectedTextModel,
+                reasoningEffort: selectedReasoningEffort,
+                preferredCodeLanguage: nil
+            )
+
+            if advice != automaticCopilotAdvice {
+                automaticCopilotAdvice = advice
+                automaticCopilotUpdatedAt = Date()
+            } else if automaticCopilotUpdatedAt == nil {
+                automaticCopilotUpdatedAt = Date()
+            }
+        } catch {
+            // Keep automatic updates silent so they do not overwrite the main manual-response UX.
+        }
+    }
+
+    private var currentLivePartials: [CaptureSource: String] {
+        [
+            .microphone: liveMicrophoneText,
+            .systemAudio: liveSystemText
+        ]
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {

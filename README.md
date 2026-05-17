@@ -11,6 +11,7 @@ The current app is focused on a transparent floating overlay, live transcription
 - Overlay hidden from normal screenshots and screen-sharing capture
 - Live microphone capture
 - System-audio and OCR hooks for meeting context
+- AirPods and other Bluetooth headset compatibility through the active macOS input/output devices
 - OpenAI-powered transcription and response generation
 - Rolling conversation context with "what to say next" help
 - Local OpenAI key storage in macOS Keychain
@@ -59,16 +60,21 @@ open -a /Applications/Glass.app
 
 - `⌃⌥⌘E`: open Glass on the currently active screen/space and collect context for that screen
 - `⌃⌥⌘Q`: hide Glass from the current screen/space without quitting the app
-- `⌃⌥⌘R`: generate an AI response from the meeting context collected so far
+- `⌃⌥⌘R`: generate a Python answer from the meeting context collected so far
+- `⌃⌥⌘C`: generate a C++ answer from the meeting context collected so far
 - `⌃⌥⌘F`: start or stop meeting context collection
 - `⌃⌥⌘W`: move Glass up
 - `⌃⌥⌘A`: move Glass left
 - `⌃⌥⌘S`: move Glass down
 - `⌃⌥⌘D`: move Glass right
+- `⌃⌥⌘↑`: scroll up through the AI chat history
+- `⌃⌥⌘↓`: scroll down through the AI chat history
 - `Settings → Request Screen Access`: ask macOS for Screen Recording permission
 - `Settings → Relaunch Glass`: restart the app after granting Screen Recording so the permission takes effect
 
-Glass keeps collecting transcript and screen context continuously during a meeting, but it only calls OpenAI for a reply when you explicitly press `⌃⌥⌘R` or click `Ask AI`.
+Glass keeps collecting transcript and screen context continuously during a meeting, but it only calls OpenAI for a reply when you explicitly press `⌃⌥⌘R`, `⌃⌥⌘C`, or click `Ask AI`. For coding and DSA prompts, the reply now includes a concise explanation plus Python or C++ code with a comment line directly above each code line when the model has enough context.
+
+If your Mac input is set to AirPods, Glass will use the AirPods microphone for the `You` channel. If meeting audio is playing through AirPods, Glass still captures that laptop/system audio separately for the `Meeting` channel. During a live meeting, Glass now also rebinds the microphone path when the active input device changes.
 
 ## Permissions
 

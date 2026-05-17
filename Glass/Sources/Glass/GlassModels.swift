@@ -78,6 +78,8 @@ struct CopilotAdvice: Equatable {
     var summary: String
     var whatToSayNext: String
     var notes: [String]
+    var codeLanguage: CopilotCodeLanguage?
+    var code: String?
 
     static let placeholder = CopilotAdvice(
         summary: "Start a live session and Glass will keep a rolling summary of the conversation.",
@@ -85,8 +87,50 @@ struct CopilotAdvice: Equatable {
         notes: [
             "System audio and microphone run in separate capture pipelines.",
             "Screen scans feed OCR text into the live copilot context."
-        ]
+        ],
+        codeLanguage: nil,
+        code: nil
     )
+
+    static let automaticPlaceholder = CopilotAdvice(
+        summary: "Automatic live suggestions will appear here while Glass keeps watching the meeting context.",
+        whatToSayNext: "Start the meeting and Glass will keep drafting quiet background suggestions in this strip.",
+        notes: [],
+        codeLanguage: nil,
+        code: nil
+    )
+}
+
+enum CopilotCodeLanguage: String, Equatable {
+    case python
+    case cpp
+
+    var sectionValue: String {
+        switch self {
+        case .python:
+            return "python"
+        case .cpp:
+            return "cpp"
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .python:
+            return "Python solution"
+        case .cpp:
+            return "C++ solution"
+        }
+    }
+
+    var commentPrefix: String {
+        switch self {
+        case .python:
+            return "#"
+        case .cpp:
+            return "//"
+        }
+    }
 }
 
 struct CopilotResponseEntry: Identifiable, Equatable {
@@ -104,6 +148,11 @@ struct CopilotResponseEntry: Identifiable, Equatable {
         formatter.dateStyle = .none
         return formatter
     }()
+}
+
+enum CopilotScrollDirection {
+    case up
+    case down
 }
 
 enum OpenAITextModel: String, CaseIterable, Identifiable {

@@ -267,7 +267,8 @@ enum OpenAICopilotService {
         screenInsight: ScreenInsight?,
         apiKey: String,
         model: OpenAITextModel,
-        reasoningEffort: OpenAIReasoningEffort
+        reasoningEffort: OpenAIReasoningEffort,
+        preferredCodeLanguage: CopilotCodeLanguage?
     ) async throws -> CopilotAdvice {
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
         request.httpMethod = "POST"
@@ -289,23 +290,49 @@ enum OpenAICopilotService {
             ? screenInsight!.text
             : "No recent screen OCR."
 
+        let preferredLanguageInstruction: String
+        if let preferredCodeLanguage {
+            preferredLanguageInstruction = "If code is needed, use exactly \(preferredCodeLanguage.sectionValue) for the CODE section."
+        } else {
+            preferredLanguageInstruction = "If code is needed, choose the most natural language for the task, but prefer concise natural-language guidance when full code is unnecessary."
+        }
+
         let prompt = """
         You are Glass, a live meeting copilot.
 
         Use the rolling transcript and optional screen OCR to help the user in real time.
+        Treat both audio channels as one shared meeting context:
+        - Meeting = laptop/system audio coming from this Mac
+        - You = microphone/room/outside audio near the user
         Keep the answer concise and practical.
         If transcript context is still sparse but screen OCR is useful, answer from the screen context instead of waiting.
-        Whenever a DSA problem is encountered, first give a light explanation of the solution, the approach, and the time and space complexity, then provide Python code with relevant comments only where they add clarity.
+        Identify any explicit or implied questions in the current context and answer them directly.
+        If multiple questions appear, prioritize the newest active question first and then cover the rest briefly.
+        If the current context shows a DSA, coding, algorithmic, interview, or implementation problem, do not stop at advice alone.
+        For those problems, explain the approach lightly first, mention the key time and space complexity, and include a complete solution in the requested language.
+        \(preferredLanguageInstruction)
+        Put that solution in the CODE section as raw code only.
+        For DSA or coding problems, every non-empty executable code line must have its own standalone comment line immediately above it.
+        Do not let one comment cover multiple code lines.
+        Use # comments for python and // comments for cpp.
+        Do not wrap the code in markdown fences.
+        If the current context is not a coding task, set CODE to None.
 
         Return exactly these sections:
         SUMMARY:
         one short paragraph
 
         WHAT TO SAY NEXT:
-        one to three crisp lines the user can say naturally
+        one to three crisp lines the user can say naturally, or a brief direct answer if someone asked a question, or a brief plain-English explanation if this is a coding task
 
         NOTES:
         up to three bullet points with risks, follow-ups, or context shifts
+
+        CODE_LANGUAGE:
+        python, cpp, or none
+
+        CODE:
+        raw code only with no markdown fences, or None if code is not needed
 
         Transcript:
         \(transcriptContext)
@@ -349,6 +376,8 @@ enum OpenAICopilotService {
         let summary = extractSection("SUMMARY", in: normalized)
         let sayNext = extractSection("WHAT TO SAY NEXT", in: normalized)
         let notesSection = extractSection("NOTES", in: normalized)
+        let codeLanguageSection = extractSection("CODE_LANGUAGE", in: normalized)
+        let codeSection = extractSection("CODE", in: normalized)
 
         let notes = notesSection
             .components(separatedBy: .newlines)
@@ -364,12 +393,14 @@ enum OpenAICopilotService {
         return CopilotAdvice(
             summary: summary.isEmpty ? text.trimmingCharacters(in: .whitespacesAndNewlines) : summary,
             whatToSayNext: sayNext.isEmpty ? "No suggested response yet." : sayNext,
-            notes: notes.isEmpty ? ["No extra notes from the model."] : Array(notes.prefix(3))
+            notes: notes.isEmpty ? ["No extra notes from the model."] : Array(notes.prefix(3)),
+            codeLanguage: cleanCodeLanguageSection(codeLanguageSection),
+            code: cleanCodeSection(codeSection)
         )
     }
 
     private static func extractSection(_ heading: String, in text: String) -> String {
-        let markers = ["SUMMARY", "WHAT TO SAY NEXT", "NOTES"]
+        let markers = ["SUMMARY", "WHAT TO SAY NEXT", "NOTES", "CODE_LANGUAGE", "CODE"]
         guard let startRange = text.range(of: "\(heading):") else {
             return ""
         }
@@ -384,6 +415,36 @@ enum OpenAICopilotService {
 
         let section = nextStart.map { afterStart[..<$0.lowerBound] } ?? afterStart[...]
         return section.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func cleanCodeSection(_ codeSection: String) -> String? {
+        let trimmed = codeSection.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.caseInsensitiveCompare("none") != .orderedSame else { return nil }
+
+        if trimmed.hasPrefix("```"), trimmed.hasSuffix("```") {
+            let lines = trimmed.components(separatedBy: .newlines)
+            guard lines.count >= 3 else { return trimmed }
+            return lines.dropFirst().dropLast().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return trimmed
+    }
+
+    private static func cleanCodeLanguageSection(_ codeLanguageSection: String) -> CopilotCodeLanguage? {
+        let trimmed = codeLanguageSection.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed != "none" else { return nil }
+
+        if trimmed == "python" {
+            return .python
+        }
+
+        if trimmed == "cpp" || trimmed == "c++" || trimmed == "cplusplus" {
+            return .cpp
+        }
+
+        return nil
     }
 
     private static func decodeOutputText(from data: Data) -> String? {

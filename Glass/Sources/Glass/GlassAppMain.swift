@@ -23,25 +23,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var openHotKeyRef: EventHotKeyRef?
     private var closeHotKeyRef: EventHotKeyRef?
     private var responseHotKeyRef: EventHotKeyRef?
+    private var cppResponseHotKeyRef: EventHotKeyRef?
     private var meetingHotKeyRef: EventHotKeyRef?
     private var moveUpHotKeyRef: EventHotKeyRef?
     private var moveLeftHotKeyRef: EventHotKeyRef?
     private var moveDownHotKeyRef: EventHotKeyRef?
     private var moveRightHotKeyRef: EventHotKeyRef?
+    private var scrollUpHotKeyRef: EventHotKeyRef?
+    private var scrollDownHotKeyRef: EventHotKeyRef?
     private var localKeyMonitor: Any?
+    private var movementRepeatTimer: Timer?
+    private var movementRepeatStartWorkItem: DispatchWorkItem?
+    private var activeMovementIdentifier: UInt32?
 
     private let hotKeySignature = fourCharCode("GLAS")
     private let openHotKeyIdentifier: UInt32 = 1
     private let closeHotKeyIdentifier: UInt32 = 2
     private let responseHotKeyIdentifier: UInt32 = 3
-    private let meetingHotKeyIdentifier: UInt32 = 4
-    private let moveUpHotKeyIdentifier: UInt32 = 5
-    private let moveLeftHotKeyIdentifier: UInt32 = 6
-    private let moveDownHotKeyIdentifier: UInt32 = 7
-    private let moveRightHotKeyIdentifier: UInt32 = 8
+    private let cppResponseHotKeyIdentifier: UInt32 = 4
+    private let meetingHotKeyIdentifier: UInt32 = 5
+    private let moveUpHotKeyIdentifier: UInt32 = 6
+    private let moveLeftHotKeyIdentifier: UInt32 = 7
+    private let moveDownHotKeyIdentifier: UInt32 = 8
+    private let moveRightHotKeyIdentifier: UInt32 = 9
+    private let scrollUpHotKeyIdentifier: UInt32 = 10
+    private let scrollDownHotKeyIdentifier: UInt32 = 11
     private let requiredHotKeyModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
     private let carbonHotKeyModifiers: UInt32 = UInt32(controlKey | optionKey | cmdKey)
     private let overlayNudgeStep: CGFloat = 48
+    private let movementRepeatDelay: TimeInterval = 0.18
+    private let movementRepeatInterval: TimeInterval = 0.045
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -68,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        stopContinuousMovement()
         viewModel.stopImmediatelyForQuit()
         return .terminateNow
     }
@@ -91,70 +103,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func installHotKeys() {
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            )
+        ]
 
-        InstallEventHandler(
-            GetEventDispatcherTarget(),
-            { _, event, userData in
-                guard let event,
-                      let userData else { return noErr }
+        _ = eventTypes.withUnsafeMutableBufferPointer { buffer in
+            InstallEventHandler(
+                GetEventDispatcherTarget(),
+                { _, event, userData in
+                    guard let event,
+                          let userData else { return noErr }
 
-                var hotKeyID = EventHotKeyID()
-                let status = GetEventParameter(
-                    event,
-                    EventParamName(kEventParamDirectObject),
-                    EventParamType(typeEventHotKeyID),
-                    nil,
-                    MemoryLayout<EventHotKeyID>.size,
-                    nil,
-                    &hotKeyID
-                )
-                guard status == noErr else { return status }
+                    var hotKeyID = EventHotKeyID()
+                    let status = GetEventParameter(
+                        event,
+                        EventParamName(kEventParamDirectObject),
+                        EventParamType(typeEventHotKeyID),
+                        nil,
+                        MemoryLayout<EventHotKeyID>.size,
+                        nil,
+                        &hotKeyID
+                    )
+                    guard status == noErr else { return status }
 
-                let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
-                delegate.handleHotKeyPress(hotKeyID.id)
-                return noErr
-            },
-            1,
-            &eventType,
-            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
-            &hotKeyHandler
-        )
+                    let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+                    if GetEventKind(event) == UInt32(kEventHotKeyReleased) {
+                        delegate.handleHotKeyRelease(hotKeyID.id)
+                    } else {
+                        delegate.handleHotKeyPress(hotKeyID.id)
+                    }
+                    return noErr
+                },
+                buffer.count,
+                buffer.baseAddress,
+                UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+                &hotKeyHandler
+            )
+        }
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == self.requiredHotKeyModifiers,
-                  let characters = event.charactersIgnoringModifiers?.lowercased() else {
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == self.requiredHotKeyModifiers else {
                 return event
             }
 
-            switch characters {
-            case "e":
-                self.openOverlayOnCurrentScreen(triggerAnalysis: true, activateApp: false)
+            switch Int(event.keyCode) {
+            case kVK_ANSI_E:
                 return nil
-            case "q":
-                self.closeOverlayOnCurrentScreen()
+            case kVK_ANSI_Q:
                 return nil
-            case "r":
-                self.requestAIResponseForCurrentMeeting()
+            case kVK_ANSI_R:
                 return nil
-            case "f":
-                self.toggleMeetingForCurrentScreen()
+            case kVK_ANSI_C:
                 return nil
-            case "w":
-                self.moveOverlayOnCurrentScreen(deltaX: 0, deltaY: self.overlayNudgeStep)
+            case kVK_ANSI_F:
                 return nil
-            case "a":
-                self.moveOverlayOnCurrentScreen(deltaX: -self.overlayNudgeStep, deltaY: 0)
+            case kVK_ANSI_W:
                 return nil
-            case "s":
-                self.moveOverlayOnCurrentScreen(deltaX: 0, deltaY: -self.overlayNudgeStep)
+            case kVK_ANSI_A:
                 return nil
-            case "d":
-                self.moveOverlayOnCurrentScreen(deltaX: self.overlayNudgeStep, deltaY: 0)
+            case kVK_ANSI_S:
+                return nil
+            case kVK_ANSI_D:
+                return nil
+            case kVK_UpArrow:
+                return nil
+            case kVK_DownArrow:
                 return nil
             default:
                 return event
@@ -175,6 +196,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             keyCode: UInt32(kVK_ANSI_R),
             modifiers: carbonHotKeyModifiers,
             identifier: responseHotKeyIdentifier
+        )
+        cppResponseHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_C),
+            modifiers: carbonHotKeyModifiers,
+            identifier: cppResponseHotKeyIdentifier
         )
         meetingHotKeyRef = registerHotKey(
             keyCode: UInt32(kVK_ANSI_F),
@@ -201,6 +227,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             modifiers: carbonHotKeyModifiers,
             identifier: moveRightHotKeyIdentifier
         )
+        scrollUpHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_UpArrow),
+            modifiers: carbonHotKeyModifiers,
+            identifier: scrollUpHotKeyIdentifier
+        )
+        scrollDownHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_DownArrow),
+            modifiers: carbonHotKeyModifiers,
+            identifier: scrollDownHotKeyIdentifier
+        )
     }
 
     private func registerHotKey(keyCode: UInt32, modifiers: UInt32, identifier: UInt32) -> EventHotKeyRef? {
@@ -225,17 +261,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case closeHotKeyIdentifier:
             closeOverlayOnCurrentScreen()
         case responseHotKeyIdentifier:
-            requestAIResponseForCurrentMeeting()
+            requestAIResponseForCurrentMeeting(preferredCodeLanguage: .python)
+        case cppResponseHotKeyIdentifier:
+            requestAIResponseForCurrentMeeting(preferredCodeLanguage: .cpp)
         case meetingHotKeyIdentifier:
             toggleMeetingForCurrentScreen()
-        case moveUpHotKeyIdentifier:
-            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: overlayNudgeStep)
-        case moveLeftHotKeyIdentifier:
-            moveOverlayOnCurrentScreen(deltaX: -overlayNudgeStep, deltaY: 0)
-        case moveDownHotKeyIdentifier:
-            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: -overlayNudgeStep)
-        case moveRightHotKeyIdentifier:
-            moveOverlayOnCurrentScreen(deltaX: overlayNudgeStep, deltaY: 0)
+        case moveUpHotKeyIdentifier, moveLeftHotKeyIdentifier, moveDownHotKeyIdentifier, moveRightHotKeyIdentifier:
+            startContinuousMovement(for: identifier)
+        case scrollUpHotKeyIdentifier:
+            scrollCopilotHistory(.up)
+        case scrollDownHotKeyIdentifier:
+            scrollCopilotHistory(.down)
+        default:
+            break
+        }
+    }
+
+    private func handleHotKeyRelease(_ identifier: UInt32) {
+        switch identifier {
+        case moveUpHotKeyIdentifier, moveLeftHotKeyIdentifier, moveDownHotKeyIdentifier, moveRightHotKeyIdentifier:
+            stopContinuousMovement(for: identifier)
         default:
             break
         }
@@ -262,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window = newWindow
         }
 
-        applyStealthMode(to: window)
+        applyCaptureVisibilityMode(to: window)
         viewModel.setFocusedDisplayID(displayID(for: screen))
         present(window, activateApp: activateApp)
 
@@ -273,14 +318,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func requestAIResponseForCurrentMeeting() {
+    private func requestAIResponseForCurrentMeeting(preferredCodeLanguage: CopilotCodeLanguage) {
         if let screen = currentScreen() {
             viewModel.setFocusedDisplayID(displayID(for: screen))
         }
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.viewModel.refreshCopilotNow()
+            await self.viewModel.refreshCopilotNow(preferredCodeLanguage: preferredCodeLanguage)
         }
     }
 
@@ -319,6 +364,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func scrollCopilotHistory(_ direction: CopilotScrollDirection) {
+        guard !overlayWindows.isEmpty else { return }
+        viewModel.requestCopilotScroll(direction)
+    }
+
+    private func startContinuousMovement(for identifier: UInt32) {
+        performMovement(for: identifier)
+
+        if activeMovementIdentifier == identifier {
+            return
+        }
+
+        stopContinuousMovement()
+        activeMovementIdentifier = identifier
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.activeMovementIdentifier == identifier else { return }
+
+            let timer = Timer.scheduledTimer(withTimeInterval: self.movementRepeatInterval, repeats: true) { [weak self] timer in
+                Task { @MainActor [weak self] in
+                    guard let self, self.activeMovementIdentifier == identifier else {
+                        self?.stopContinuousMovement(for: identifier)
+                        return
+                    }
+                    self.performMovement(for: identifier)
+                }
+            }
+
+            RunLoop.main.add(timer, forMode: .common)
+            self.movementRepeatTimer = timer
+        }
+
+        movementRepeatStartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + movementRepeatDelay, execute: workItem)
+    }
+
+    private func stopContinuousMovement(for identifier: UInt32? = nil) {
+        if let identifier, activeMovementIdentifier != identifier {
+            return
+        }
+
+        movementRepeatStartWorkItem?.cancel()
+        movementRepeatStartWorkItem = nil
+        movementRepeatTimer?.invalidate()
+        movementRepeatTimer = nil
+        activeMovementIdentifier = nil
+    }
+
+    private func performMovement(for identifier: UInt32) {
+        switch identifier {
+        case moveUpHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: overlayNudgeStep)
+        case moveLeftHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: -overlayNudgeStep, deltaY: 0)
+        case moveDownHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: 0, deltaY: -overlayNudgeStep)
+        case moveRightHotKeyIdentifier:
+            moveOverlayOnCurrentScreen(deltaX: overlayNudgeStep, deltaY: 0)
+        default:
+            break
+        }
+    }
+
     private func closeStaleWindowsForDisconnectedDisplays() {
         let validIDs = Set(NSScreen.screens.map(screenID(for:)))
         for id in Set(overlayWindows.keys).subtracting(validIDs) {
@@ -346,12 +454,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let screen = NSScreen.screens.first(where: { screenID(for: $0) == id }) {
                 position(window, on: screen)
             }
-            applyStealthMode(to: window)
+            applyCaptureVisibilityMode(to: window)
             present(window, activateApp: activateApp)
         }
     }
 
-    private func applyStealthMode(to window: NSWindow) {
+    private func applyCaptureVisibilityMode(to window: NSWindow) {
         guard NSApp.windows.contains(window) else { return }
         window.sharingType = .none
     }
@@ -379,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func present(_ window: NSWindow, activateApp: Bool) {
-        applyStealthMode(to: window)
+        applyCaptureVisibilityMode(to: window)
         window.collectionBehavior.insert(.moveToActiveSpace)
         window.orderFrontRegardless()
 
@@ -395,18 +503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let window = GlassOverlayPanel(
             contentRect: frame(for: screen),
-            styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
         )
         window.title = "Glass"
         window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.hasShadow = true
+        window.hasShadow = false
         window.hidesOnDeactivate = false
         window.isFloatingPanel = true
         window.becomesKeyOnlyIfNeeded = true
@@ -416,8 +522,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace, .transient, .ignoresCycle]
         window.contentView = hostingView
         window.delegate = self
-        window.standardWindowButton(.closeButton)?.target = self
-        window.standardWindowButton(.closeButton)?.action = #selector(closeGlassWindow(_:))
         position(window, on: screen)
         return window
     }
@@ -444,12 +548,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func defaultFrame(for screen: NSScreen) -> NSRect {
         let visible = screen.visibleFrame
-        let horizontalInset: CGFloat = 24
-        let verticalInset: CGFloat = 26
-        let targetWidth = min(980, visible.width - horizontalInset * 2)
-        let width = min(visible.width - 12, max(620, targetWidth))
-        let targetHeight = min(820, visible.height - 56)
-        let height = min(visible.height - 12, max(560, targetHeight))
+        let horizontalInset: CGFloat = 18
+        let verticalInset: CGFloat = 20
+        let targetWidth = min(660, visible.width - horizontalInset * 2)
+        let width = min(visible.width - 8, max(470, targetWidth))
+        let targetHeight = min(980, visible.height - 24)
+        let height = min(visible.height - 8, max(820, targetHeight))
         let x = visible.midX - (width / 2)
         let y = visible.maxY - height - verticalInset
         return NSRect(x: x, y: y, width: width, height: height)

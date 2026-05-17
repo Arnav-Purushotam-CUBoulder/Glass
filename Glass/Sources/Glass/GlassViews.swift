@@ -9,131 +9,19 @@ struct GlassRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let horizontalPadding: CGFloat = 34
-            let availableWidth = max(560, proxy.size.width - (horizontalPadding * 2))
-            let panelWidth = min(920, max(560, availableWidth - 60))
-            let controlBarWidth = min(760, max(420, panelWidth * 0.82))
+            let panelWidth = max(470, proxy.size.width - 12)
 
-            ZStack(alignment: .top) {
-                overlayGlowLayer
+            ZStack(alignment: .topLeading) {
+                Color.clear
 
-                VStack(spacing: 24) {
-                    floatingControlBar(width: controlBarWidth)
-                    .padding(.top, 18)
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                    aiResponsePanel(width: panelWidth)
-                    .padding(.horizontal, horizontalPadding)
-
-                    Spacer(minLength: 24)
-                }
+                aiResponsePanel(width: panelWidth)
+                    .padding(6)
 
                 if isShowingSettings {
                     inlineSettingsOverlay
                 }
             }
         }
-    }
-
-    private var overlayGlowLayer: some View {
-        ZStack {
-            Color.clear
-
-            Circle()
-                .fill(Color.cyan.opacity(0.16))
-                .frame(width: 340, height: 340)
-                .blur(radius: 110)
-                .offset(x: -340, y: 60)
-
-            Circle()
-                .fill(Color.orange.opacity(0.16))
-                .frame(width: 380, height: 380)
-                .blur(radius: 130)
-                .offset(x: 320, y: -150)
-
-            Circle()
-                .fill(Color.blue.opacity(0.12))
-                .frame(width: 320, height: 320)
-                .blur(radius: 120)
-                .offset(x: 420, y: 180)
-        }
-    }
-
-    private func floatingControlBar(width: CGFloat) -> some View {
-        HStack(spacing: 18) {
-            Button {
-                Task {
-                    await model.toggleMeeting()
-                }
-            } label: {
-                Image(systemName: model.isMeetingActive ? "pause.fill" : "record.circle.fill")
-                    .font(.system(size: 23, weight: .black))
-                    .foregroundStyle(.black.opacity(0.84))
-                    .frame(width: 46, height: 46)
-                    .background(.white, in: Circle())
-            }
-            .buttonStyle(.plain)
-
-            HStack(spacing: 10) {
-                AudioGlyph()
-                SessionElapsedText(startDate: model.sessionStartedAt)
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
-            }
-
-            Spacer(minLength: 10)
-
-            ControlBarAction(
-                title: "Ask AI",
-                keyHints: ["⌃", "⌥", "⌘", "R"]
-            ) {
-                Task {
-                    await model.refreshCopilotNow()
-                }
-            }
-
-            ControlBarAction(
-                title: isTranscriptVisible ? "Hide transcript" : "Show transcript",
-                keyHints: []
-            ) {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                    isTranscriptVisible.toggle()
-                }
-            }
-
-            Button {
-                isShowingSettings = true
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .frame(width: 40, height: 40)
-                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(width: width)
-        .background {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color.black.opacity(0.64))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.13),
-                                    Color.clear,
-                                    Color.white.opacity(0.05)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                )
-        }
-        .shadow(color: .black.opacity(0.34), radius: 28, y: 18)
     }
 
     private func aiResponsePanel(width: CGFloat) -> some View {
@@ -184,20 +72,6 @@ struct GlassRootView: View {
 
                 CopilotHistoryView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-                if let latestScreenInsight = model.latestScreenInsight,
-                   latestScreenInsight.hasRecognizedText {
-                    DividerLine()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Screen context")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.62))
-                        Text(latestScreenInsight.headline)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.84))
-                    }
-                }
 
                 if isTranscriptVisible {
                     DividerLine()
@@ -256,6 +130,16 @@ struct GlassRootView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                DividerLine()
+
+                AutomaticResponseStripView(model: model)
+                    .frame(height: 224)
+
+                DividerLine()
+
+                ContextFeedStripView(model: model)
+                    .frame(height: 86)
+
                 VStack(alignment: .trailing, spacing: 10) {
                     if isShowingModelPicker {
                         ModelSelectionPopover(
@@ -266,6 +150,7 @@ struct GlassRootView: View {
                     }
 
                     HStack {
+                        MeetingTimerPill(startDate: model.sessionStartedAt)
                         StatusPill(text: model.statusText, symbol: "dot.radiowaves.left.and.right")
                         ModelSelectionButton(
                             model: model,
@@ -371,8 +256,8 @@ struct SettingsView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
                 Text(model.screenAccessConfigured
-                     ? "Screen Recording access is granted. Glass uses it for system audio capture and slide OCR, while still hiding its own overlay from screenshots and screen sharing."
-                     : "Enable Screen Recording access to unlock system audio capture and OCR for shared slides. Glass still hides its own overlay from capture either way.")
+                     ? "Screen Recording access is granted. Glass uses it for system audio capture and slide OCR. The overlay is hidden from screenshots and screen sharing again."
+                     : "Enable Screen Recording access to unlock system audio capture and OCR for shared slides. Once granted, the overlay stays hidden from screenshots and screen sharing.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -455,23 +340,10 @@ struct DarkGlassPanel<Content: View>: View {
         content
             .padding(20)
             .frame(width: width, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
             .background {
                 RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .fill(Color.black.opacity(0.52))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 30, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.13),
-                                        Color.clear,
-                                        Color.white.opacity(0.05)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    )
+                    .fill(Color.black.opacity(0.72))
             }
             .shadow(color: .black.opacity(0.35), radius: 28, y: 18)
     }
@@ -550,6 +422,29 @@ struct SessionElapsedText: View {
         let minutes = elapsed / 60
         let seconds = elapsed % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+struct MeetingTimerPill: View {
+    let startDate: Date?
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "timer")
+            SessionElapsedText(startDate: startDate)
+        }
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(.white.opacity(0.74))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
     }
 }
 
@@ -755,35 +650,85 @@ struct SelectionOptionGrid<Option: Identifiable & Equatable>: View {
 
 struct CopilotHistoryView: View {
     @ObservedObject var model: GlassViewModel
+    @State private var resolvedScrollView: NSScrollView?
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if model.copilotHistory.isEmpty {
-                        CopilotResponseCard(
-                            entry: CopilotResponseEntry(
-                                advice: model.copilotAdvice,
-                                createdAt: Date()
-                            ),
-                            isPlaceholder: true
-                        )
-                    } else {
-                        ForEach(model.copilotHistory) { entry in
-                            CopilotResponseCard(entry: entry)
-                                .id(entry.id)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if model.copilotHistory.isEmpty {
+                    CopilotResponseCard(
+                        entry: CopilotResponseEntry(
+                            advice: model.copilotAdvice,
+                            createdAt: Date()
+                        ),
+                        isPlaceholder: true
+                    )
+                } else {
+                    let entries = Array(model.copilotHistory.enumerated())
+                    ForEach(entries, id: \.element.id) { index, entry in
+                        CopilotResponseCard(entry: entry)
+                        if index < entries.count - 1 {
+                            DividerLine()
                         }
                     }
                 }
-                .padding(.trailing, 4)
             }
-            .onChange(of: model.copilotHistory.count) { _, _ in
-                guard let lastID = model.copilotHistory.last?.id else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(lastID, anchor: .bottom)
+            .padding(.trailing, 4)
+            .background(
+                ScrollViewResolver { scrollView in
+                    if resolvedScrollView !== scrollView {
+                        resolvedScrollView = scrollView
+                    }
                 }
-            }
+            )
         }
+        .onAppear {
+            scrollToBottom(animated: false)
+        }
+        .onChange(of: model.copilotHistory.count) { _, _ in
+            scrollToBottom(animated: true)
+        }
+        .onChange(of: model.copilotScrollToken) { _, _ in
+            scrollBy(model.copilotScrollDelta, animated: true)
+        }
+    }
+
+    private func scrollBy(_ delta: CGFloat, animated: Bool) {
+        guard let scrollView = resolvedScrollView,
+              let documentView = scrollView.documentView else { return }
+
+        let visibleHeight = scrollView.contentView.bounds.height
+        let maxOffset = max(0, documentView.bounds.height - visibleHeight)
+        let currentY = scrollView.contentView.bounds.origin.y
+        let directionAdjustedDelta = documentView.isFlipped ? delta : -delta
+        let nextY = min(max(currentY + directionAdjustedDelta, 0), maxOffset)
+
+        setScrollOrigin(y: nextY, on: scrollView, animated: animated)
+    }
+
+    private func scrollToBottom(animated: Bool) {
+        guard let scrollView = resolvedScrollView,
+              let documentView = scrollView.documentView else { return }
+
+        let visibleHeight = scrollView.contentView.bounds.height
+        let maxOffset = max(0, documentView.bounds.height - visibleHeight)
+        let targetY = documentView.isFlipped ? maxOffset : 0
+        setScrollOrigin(y: targetY, on: scrollView, animated: animated)
+    }
+
+    private func setScrollOrigin(y: CGFloat, on scrollView: NSScrollView, animated: Bool) {
+        let point = NSPoint(x: 0, y: y)
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                scrollView.contentView.animator().setBoundsOrigin(point)
+            }
+        } else {
+            scrollView.contentView.setBoundsOrigin(point)
+        }
+
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 }
 
@@ -829,17 +774,218 @@ struct CopilotResponseCard: View {
                     }
                 }
             }
+
+            if let code = entry.advice.code, !code.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(entry.advice.codeLanguage?.displayTitle ?? "Code solution")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    SyntaxHighlightedCodeBlock(
+                        code: code,
+                        language: entry.advice.codeLanguage
+                    )
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.black.opacity(0.28))
+                    )
+                }
+            }
         }
-        .padding(16)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(isPlaceholder ? 0.05 : 0.08))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.white.opacity(isPlaceholder ? 0.08 : 0.12), lineWidth: 1)
-                )
+    }
+}
+
+struct SyntaxHighlightedCodeBlock: View {
+    let code: String
+    let language: CopilotCodeLanguage?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            Text(attributedCode)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding(14)
+        }
+    }
+
+    private var attributedCode: AttributedString {
+        let highlighted = CodeSyntaxHighlighter.highlighted(code: code, language: language)
+        return (try? AttributedString(highlighted, including: \.appKit)) ?? AttributedString(code)
+    }
+}
+
+enum CodeSyntaxHighlighter {
+    static func highlighted(code: String, language: CopilotCodeLanguage?) -> NSAttributedString {
+        let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        let italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+
+        let attributed = NSMutableAttributedString(
+            string: code,
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor(calibratedWhite: 0.94, alpha: 1)
+            ]
         )
+
+        applyPattern(#""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#, color: NSColor(calibratedRed: 0.41, green: 0.82, blue: 0.61, alpha: 1), in: attributed)
+        applyPattern(#"\b\d+(?:\.\d+)?\b"#, color: NSColor(calibratedRed: 0.96, green: 0.62, blue: 0.28, alpha: 1), in: attributed)
+
+        switch language {
+        case .python:
+            applyKeywords(
+                [
+                    "class", "def", "return", "if", "elif", "else", "for", "while", "in", "and", "or",
+                    "not", "break", "continue", "try", "except", "finally", "with", "as", "from",
+                    "import", "pass", "None", "True", "False"
+                ],
+                color: NSColor(calibratedRed: 0.76, green: 0.47, blue: 0.98, alpha: 1),
+                in: attributed
+            )
+            applyPattern(#"(?m)^\s*#.*$"#, color: NSColor(calibratedWhite: 0.62, alpha: 1), font: italicFont, in: attributed)
+        case .cpp:
+            applyKeywords(
+                [
+                    "class", "struct", "public", "private", "protected", "return", "if", "else", "for", "while",
+                    "break", "continue", "const", "static", "using", "namespace", "include", "template", "typename",
+                    "int", "long", "double", "float", "char", "bool", "void", "auto", "true", "false", "nullptr"
+                ],
+                color: NSColor(calibratedRed: 0.76, green: 0.47, blue: 0.98, alpha: 1),
+                in: attributed
+            )
+            applyPattern(#"(?m)^\s*//.*$"#, color: NSColor(calibratedWhite: 0.62, alpha: 1), font: italicFont, in: attributed)
+        case nil:
+            applyPattern(#"(?m)^\s*(#|//).*$"#, color: NSColor(calibratedWhite: 0.62, alpha: 1), font: italicFont, in: attributed)
+        }
+
+        return attributed
+    }
+
+    private static func applyKeywords(_ keywords: [String], color: NSColor, in attributed: NSMutableAttributedString) {
+        let escaped = keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+        applyPattern(#"\b(?:\#(escaped))\b"#, color: color, in: attributed)
+    }
+
+    private static func applyPattern(_ pattern: String, color: NSColor, font: NSFont? = nil, in attributed: NSMutableAttributedString) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
+        let range = NSRange(location: 0, length: attributed.string.utf16.count)
+        regex.enumerateMatches(in: attributed.string, options: [], range: range) { match, _, _ in
+            guard let matchRange = match?.range else { return }
+            attributed.addAttribute(.foregroundColor, value: color, range: matchRange)
+            if let font {
+                attributed.addAttribute(.font, value: font, range: matchRange)
+            }
+        }
+    }
+}
+
+struct AutomaticResponseStripView: View {
+    @ObservedObject var model: GlassViewModel
+    private let bottomAnchor = "automatic-response-bottom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Automatic response")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.86))
+
+                Spacer()
+
+                Text(model.automaticResponseTimeLabel)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(model.automaticResponseText)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomAnchor)
+                    }
+                }
+                .onAppear {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+                .onChange(of: model.automaticResponseText) { _, _ in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct ContextFeedStripView: View {
+    @ObservedObject var model: GlassViewModel
+    private let bottomAnchor = "context-feed-bottom"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Context intake")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.86))
+
+                Spacer()
+
+                Text("LIVE OCR + STT")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(model.contextFeedText)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id(bottomAnchor)
+                    }
+                }
+                .onAppear {
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
+                .onChange(of: model.contextFeedText) { _, _ in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct ScrollViewResolver: NSViewRepresentable {
+    let onResolve: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let scrollView = nsView.enclosingScrollView {
+                onResolve(scrollView)
+            }
+        }
     }
 }
 

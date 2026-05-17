@@ -94,14 +94,54 @@ enum AudioSampleBufferBridge {
 
 final class MicrophoneCaptureService: @unchecked Sendable {
     var onPCMData: ((Data) -> Void)?
+    var onError: ((Error) -> Void)?
+    var onConfigurationChanged: (() -> Void)?
 
     private let engine = AVAudioEngine()
     private let converter = PCMFormatConverter()
     private var isRunning = false
+    private var configurationObserver: NSObjectProtocol?
+
+    init() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+    }
 
     func start() throws {
         guard !isRunning else { return }
+        try startEngine()
+        isRunning = true
+    }
 
+    func stop() {
+        guard isRunning else { return }
+        stopEngine()
+        isRunning = false
+    }
+
+    private func startEngine() throws {
+        installTap()
+        engine.prepare()
+        try engine.start()
+    }
+
+    private func stopEngine() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+
+    private func installTap() {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
@@ -113,17 +153,19 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             }
             self.onPCMData?(data)
         }
-
-        engine.prepare()
-        try engine.start()
-        isRunning = true
     }
 
-    func stop() {
+    private func handleConfigurationChange() {
         guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        isRunning = false
+
+        stopEngine()
+
+        do {
+            try startEngine()
+            onConfigurationChanged?()
+        } catch {
+            onError?(error)
+        }
     }
 }
 

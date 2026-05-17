@@ -4,13 +4,13 @@ import ScreenCaptureKit
 import Vision
 
 enum ScreenOCRService {
-    static func captureCurrentDisplayText() async throws -> ScreenInsight {
-        guard CGPreflightScreenCaptureAccess() else {
-            throw SystemAudioCaptureError.screenPermissionRequired
-        }
-
+    static func captureCurrentDisplayText(displayID: CGDirectDisplayID? = nil) async throws -> ScreenInsight {
         let shareableContent = try await SCShareableContent.current
-        guard let display = shareableContent.displays.first else {
+        let display = displayID.flatMap { id in
+            shareableContent.displays.first(where: { $0.displayID == id })
+        } ?? shareableContent.displays.first
+
+        guard let display else {
             throw SystemAudioCaptureError.noDisplayAvailable
         }
 
@@ -57,7 +57,7 @@ enum ScreenOCRService {
             .joined(separator: "\n")
 
         return ScreenInsight(
-            text: text.isEmpty ? "No OCR text detected on the latest screen capture." : text,
+            text: text.isEmpty ? ScreenInsight.emptyTextMessage : text,
             capturedAt: Date()
         )
     }

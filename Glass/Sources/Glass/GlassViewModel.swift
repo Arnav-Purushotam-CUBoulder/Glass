@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import Foundation
 import SwiftUI
 
@@ -10,6 +11,7 @@ final class GlassViewModel: ObservableObject {
     @Published var liveMicrophoneText = ""
     @Published var liveSystemText = ""
     @Published var copilotAdvice = CopilotAdvice.placeholder
+    @Published var copilotHistory: [CopilotResponseEntry] = []
     @Published var latestScreenInsight: ScreenInsight?
     @Published var errorText: String?
     @Published var isMeetingActive = false
@@ -30,6 +32,8 @@ final class GlassViewModel: ObservableObject {
     private var systemAudioTranscriber: OpenAIRealtimeTranscriber?
     private var copilotRefreshTask: Task<Void, Never>?
     private var screenScanLoopTask: Task<Void, Never>?
+    private var focusedDisplayID: CGDirectDisplayID?
+    private var hasRequestedScreenAccessThisLaunch = false
 
     init() {
         microphoneCapture.onPCMData = { [weak self] data in
@@ -67,6 +71,13 @@ final class GlassViewModel: ObservableObject {
         return "\(selectedTextModel.title) · Thinking \(effort)"
     }
 
+    var hasCopilotContext: Bool {
+        !transcriptSegments.isEmpty ||
+        !liveMicrophoneText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !liveSystemText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        (latestScreenInsight?.hasRecognizedText == true)
+    }
+
     func refreshPermissions() {
         microphoneStatus = switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -91,16 +102,27 @@ final class GlassViewModel: ObservableObject {
     func requestScreenRecordingAccess() {
         screenAccessConfigured = CGPreflightScreenCaptureAccess()
         if screenAccessConfigured {
+            errorText = nil
+            statusText = "Screen access ready"
             refreshPermissions()
             return
         }
 
+        hasRequestedScreenAccessThisLaunch = true
         let granted = CGRequestScreenCaptureAccess()
         screenAccessConfigured = granted || CGPreflightScreenCaptureAccess()
         refreshPermissions()
 
-        if !screenAccessConfigured,
-           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+        if screenAccessConfigured {
+            errorText = nil
+            statusText = "Screen access granted"
+            return
+        }
+
+        errorText = screenRecordingRestartHelpText
+        statusText = "Relaunch required"
+
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -143,11 +165,65 @@ final class GlassViewModel: ObservableObject {
         }
     }
 
+    func selectTextModel(_ model: OpenAITextModel) {
+        selectedTextModel = model
+        saveModelPreferences(showStatus: true)
+        if isMeetingActive, hasCopilotContext {
+            scheduleCopilotRefresh()
+        }
+    }
+
+    func selectReasoningEffort(_ effort: OpenAIReasoningEffort) {
+        selectedReasoningEffort = effort
+        saveModelPreferences(showStatus: true)
+        if isMeetingActive, hasCopilotContext {
+            scheduleCopilotRefresh()
+        }
+    }
+
+    func relaunchApplication() {
+        let appURL = Bundle.main.bundleURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { [weak self] _, error in
+            Task { @MainActor [weak self] in
+                if let error {
+                    self?.errorText = "Could not relaunch Glass: \(error.localizedDescription)"
+                    self?.statusText = "Relaunch failed"
+                    return
+                }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
     func toggleMeeting() async {
         if isMeetingActive {
             stopMeeting()
         } else {
             await startMeeting()
+        }
+    }
+
+    func setFocusedDisplayID(_ displayID: CGDirectDisplayID?) {
+        focusedDisplayID = displayID
+    }
+
+    func analyzeCurrentScreen(promptForAccessIfNeeded: Bool = false) async {
+        refreshPermissions()
+
+        if !screenAccessConfigured, promptForAccessIfNeeded {
+            requestScreenRecordingAccess()
+            refreshPermissions()
+        }
+
+        await captureScreenContext(silent: false, refreshCopilot: false)
+
+        guard errorText == nil else { return }
+
+        if hasCopilotContext {
+            await refreshCopilotNow()
+        } else {
+            statusText = "No screen text found yet"
         }
     }
 
@@ -158,8 +234,12 @@ final class GlassViewModel: ObservableObject {
             return
         }
 
-        guard !transcriptSegments.isEmpty || !liveMicrophoneText.isEmpty || !liveSystemText.isEmpty else {
-            statusText = "Waiting for conversation"
+        if !hasCopilotContext {
+            await captureScreenContext(silent: true, refreshCopilot: false)
+        }
+
+        guard hasCopilotContext else {
+            statusText = screenAccessConfigured ? "Waiting for live context" : "Screen access needed"
             return
         }
 
@@ -182,6 +262,7 @@ final class GlassViewModel: ObservableObject {
             )
 
             copilotAdvice = advice
+            appendCopilotHistoryEntry(advice)
             statusText = "Copilot live"
         } catch {
             errorText = explainOpenAIError(error)
@@ -191,13 +272,8 @@ final class GlassViewModel: ObservableObject {
         isRefreshingCopilot = false
     }
 
-    func captureScreenContext(silent: Bool = false) async {
+    func captureScreenContext(silent: Bool = false, refreshCopilot: Bool = true) async {
         guard !isScanningScreen else { return }
-        guard screenAccessConfigured else {
-            errorText = "Enable Screen Recording access so Glass can OCR slides and shared screens."
-            statusText = "Screen access needed"
-            return
-        }
 
         isScanningScreen = true
         if !silent {
@@ -205,17 +281,32 @@ final class GlassViewModel: ObservableObject {
         }
 
         do {
-            let insight = try await ScreenOCRService.captureCurrentDisplayText()
+            let insight = try await ScreenOCRService.captureCurrentDisplayText(displayID: focusedDisplayID)
             latestScreenInsight = insight
+            errorText = nil
+            screenAccessConfigured = true
             if !silent {
                 statusText = "Screen context captured"
             }
-            scheduleCopilotRefresh()
-        } catch {
-            if !silent {
-                statusText = "Screen scan failed"
+            if refreshCopilot {
+                scheduleCopilotRefresh()
             }
-            errorText = explainOpenAIError(error)
+        } catch {
+            let preflightAllowed = CGPreflightScreenCaptureAccess()
+            screenAccessConfigured = preflightAllowed
+            if preflightAllowed {
+                if !silent {
+                    statusText = "Screen scan failed"
+                }
+                errorText = explainOpenAIError(error)
+            } else {
+                errorText = hasRequestedScreenAccessThisLaunch
+                    ? screenRecordingRestartHelpText
+                    : screenRecordingHelpText
+                statusText = hasRequestedScreenAccessThisLaunch
+                    ? "Relaunch required"
+                    : "Screen access needed"
+            }
         }
 
         isScanningScreen = false
@@ -255,6 +346,7 @@ final class GlassViewModel: ObservableObject {
         transcriptSegments.removeAll()
         liveMicrophoneText = ""
         liveSystemText = ""
+        copilotHistory.removeAll()
         latestScreenInsight = nil
         copilotAdvice = CopilotAdvice.placeholder
         errorText = nil
@@ -288,8 +380,20 @@ final class GlassViewModel: ObservableObject {
             }
         }
 
-        statusText = "Listening live"
+        if screenAccessConfigured {
+            statusText = "Scanning screen and listening live"
+            await captureScreenContext(silent: true, refreshCopilot: false)
+        } else {
+            statusText = "Listening live"
+        }
+
         startAutomaticScreenScanLoop()
+
+        if hasCopilotContext {
+            await refreshCopilotNow()
+        } else {
+            statusText = "Listening live"
+        }
     }
 
     private func stopMeeting() {
@@ -405,7 +509,7 @@ final class GlassViewModel: ObservableObject {
 
         screenScanLoopTask = Task { [weak self] in
             while let self, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 40_000_000_000)
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
                 guard !Task.isCancelled, self.isMeetingActive else { break }
                 await self.captureScreenContext(silent: true)
             }
@@ -415,6 +519,29 @@ final class GlassViewModel: ObservableObject {
     private func persistModelPreferences() {
         GlassPreferences.saveTextModel(selectedTextModel)
         GlassPreferences.saveReasoningEffort(selectedReasoningEffort)
+    }
+
+    private var screenRecordingHelpText: String {
+        "Enable Screen Recording access so Glass can OCR slides and shared screens from the Settings button. After you grant it in macOS, quit and relaunch Glass once."
+    }
+
+    private var screenRecordingRestartHelpText: String {
+        "Glass already asked macOS for screen access in this session. After turning the permission on, quit and relaunch Glass once so the grant can take effect."
+    }
+
+    private func appendCopilotHistoryEntry(_ advice: CopilotAdvice) {
+        guard copilotHistory.last?.advice != advice else { return }
+
+        copilotHistory.append(
+            CopilotResponseEntry(
+                advice: advice,
+                createdAt: Date()
+            )
+        )
+
+        if copilotHistory.count > 60 {
+            copilotHistory.removeFirst(copilotHistory.count - 60)
+        }
     }
 
     private func requestMicrophoneAccessIfNeeded() async -> Bool {

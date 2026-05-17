@@ -53,12 +53,19 @@ struct TranscriptSegment: Identifiable, Equatable {
 }
 
 struct ScreenInsight {
+    static let emptyTextMessage = "No OCR text detected on the latest screen capture."
+
     let text: String
     let capturedAt: Date
 
-    var headline: String {
+    var hasRecognizedText: Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "No text found on the last screen scan." }
+        return !trimmed.isEmpty && trimmed != ScreenInsight.emptyTextMessage
+    }
+
+    var headline: String {
+        guard hasRecognizedText else { return "No text found on the last screen scan." }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let firstLine = trimmed
             .components(separatedBy: .newlines)
             .first?
@@ -67,7 +74,7 @@ struct ScreenInsight {
     }
 }
 
-struct CopilotAdvice {
+struct CopilotAdvice: Equatable {
     var summary: String
     var whatToSayNext: String
     var notes: [String]
@@ -80,6 +87,23 @@ struct CopilotAdvice {
             "Screen scans feed OCR text into the live copilot context."
         ]
     )
+}
+
+struct CopilotResponseEntry: Identifiable, Equatable {
+    let id = UUID()
+    let advice: CopilotAdvice
+    let createdAt: Date
+
+    var timeLabel: String {
+        CopilotResponseEntry.formatter.string(from: createdAt)
+    }
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
 }
 
 enum OpenAITextModel: String, CaseIterable, Identifiable {

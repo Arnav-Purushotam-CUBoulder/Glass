@@ -16,7 +16,7 @@ final class OpenAIRealtimeTranscriber: @unchecked Sendable {
     private var isUploading = false
     private var shouldFlushAgain = false
     private let chunkByteThreshold = 24_000 * 2
-    private let flushIntervalMs = 1_200
+    private let flushIntervalMs = 800
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -294,6 +294,8 @@ enum OpenAICopilotService {
 
         Use the rolling transcript and optional screen OCR to help the user in real time.
         Keep the answer concise and practical.
+        If transcript context is still sparse but screen OCR is useful, answer from the screen context instead of waiting.
+        Whenever a DSA problem is encountered, first give a light explanation of the solution, the approach, and the time and space complexity, then provide Python code with relevant comments only where they add clarity.
 
         Return exactly these sections:
         SUMMARY:

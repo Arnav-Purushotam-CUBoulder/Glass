@@ -20,6 +20,18 @@ cp "$PACKAGE_DIR/BuildSupport/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$PACKAGE_DIR/BuildSupport/Glass.icns" "$RESOURCES_DIR/Glass.icns"
 
 chmod +x "$MACOS_DIR/Glass"
-codesign --force --deep --sign - "$APP_DIR"
+
+SIGN_IDENTITY="${GLASS_CODESIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F'\"' '/Apple Development:/{print $2; exit}')"
+fi
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning | awk -F'\"' '/Job Triage Local Signing/{print $2; exit}')"
+fi
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="-"
+fi
+
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
 
 echo "$APP_DIR"

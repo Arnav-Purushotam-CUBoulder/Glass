@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 @main
@@ -17,22 +18,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var overlayWindows: [String: NSWindow] = [:]
     private let viewModel = GlassViewModel()
     private var screenObserver: NSObjectProtocol?
-    private var activeSpaceObserver: NSObjectProtocol?
+    private var hotKeyHandler: EventHandlerRef?
+    private var openHotKeyRef: EventHotKeyRef?
+    private var closeHotKeyRef: EventHotKeyRef?
+    private var localKeyMonitor: Any?
+
+    private let hotKeySignature = fourCharCode("GLAS")
+    private let openHotKeyIdentifier: UInt32 = 1
+    private let closeHotKeyIdentifier: UInt32 = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         installObservers()
+        installHotKeys()
         viewModel.refreshPermissions()
-        NSApp.activate(ignoringOtherApps: true)
-        scheduleInitialWindowBootstrap()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        bringWindowsToFront()
+        if overlayWindows.isEmpty {
+            openOverlayOnCurrentScreen(triggerAnalysis: false, activateApp: true)
+        } else {
+            bringWindowsToFront(activateApp: true)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -57,59 +68,155 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.rebuildOverlayWindows()
+                self?.closeStaleWindowsForDisconnectedDisplays()
             }
         }
 
-        activeSpaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.bringWindowsToFront()
+    }
+
+    private func installHotKeys() {
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        InstallEventHandler(
+            GetEventDispatcherTarget(),
+            { _, event, userData in
+                guard let event,
+                      let userData else { return noErr }
+
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+                guard status == noErr else { return status }
+
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+                delegate.handleHotKeyPress(hotKeyID.id)
+                return noErr
+            },
+            1,
+            &eventType,
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+            &hotKeyHandler
+        )
+
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
+                  let characters = event.charactersIgnoringModifiers?.lowercased() else {
+                return event
             }
+
+            switch characters {
+            case "u":
+                self.openOverlayOnCurrentScreen(triggerAnalysis: true, activateApp: false)
+                return nil
+            case "i":
+                self.closeOverlayOnCurrentScreen()
+                return nil
+            default:
+                return event
+            }
+        }
+
+        openHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_U),
+            modifiers: UInt32(cmdKey),
+            identifier: openHotKeyIdentifier
+        )
+        closeHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_I),
+            modifiers: UInt32(cmdKey),
+            identifier: closeHotKeyIdentifier
+        )
+    }
+
+    private func registerHotKey(keyCode: UInt32, modifiers: UInt32, identifier: UInt32) -> EventHotKeyRef? {
+        let hotKeyID = EventHotKeyID(signature: hotKeySignature, id: identifier)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            hotKeyID,
+            GetEventDispatcherTarget(),
+            0,
+            &ref
+        )
+        guard status == noErr else { return nil }
+        return ref
+    }
+
+    private func handleHotKeyPress(_ identifier: UInt32) {
+        switch identifier {
+        case openHotKeyIdentifier:
+            openOverlayOnCurrentScreen(triggerAnalysis: true, activateApp: false)
+        case closeHotKeyIdentifier:
+            closeOverlayOnCurrentScreen()
+        default:
+            break
         }
     }
 
-    private func scheduleInitialWindowBootstrap() {
-        DispatchQueue.main.async { [weak self] in
-            self?.rebuildOverlayWindows()
-            self?.bringWindowsToFront()
+    private func openOverlayOnCurrentScreen(triggerAnalysis: Bool, activateApp: Bool) {
+        guard let screen = currentScreen() else { return }
+        let id = screenID(for: screen)
+
+        for (otherID, window) in overlayWindows where otherID != id {
+            window.delegate = nil
+            window.orderOut(nil)
+            window.close()
+            overlayWindows.removeValue(forKey: otherID)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        let window: NSWindow
+        if let existingWindow = overlayWindows[id] {
+            window = existingWindow
+            position(window, on: screen)
+        } else {
+            let newWindow = makeOverlayWindow(for: screen)
+            overlayWindows[id] = newWindow
+            window = newWindow
+        }
+
+        applyStealthMode(to: window)
+        viewModel.setFocusedDisplayID(displayID(for: screen))
+        present(window, activateApp: activateApp)
+
+        guard triggerAnalysis else { return }
+        Task { @MainActor [weak self] in
             guard let self else { return }
-            if self.overlayWindows.isEmpty {
-                self.rebuildOverlayWindows()
-                self.bringWindowsToFront()
-            }
+            await self.viewModel.analyzeCurrentScreen()
         }
     }
 
-    private func rebuildOverlayWindows() {
-        let currentScreens = NSScreen.screens
-        guard !currentScreens.isEmpty else { return }
-        let currentIDs = Set(currentScreens.map(screenID(for:)))
-
-        for screen in currentScreens {
-            let id = screenID(for: screen)
-            if let existingWindow = overlayWindows[id] {
-                position(existingWindow, on: screen)
-                existingWindow.orderFrontRegardless()
-            } else {
-                let window = makeOverlayWindow(for: screen)
-                overlayWindows[id] = window
-                if overlayWindows.count == 1 {
-                    window.makeKeyAndOrderFront(nil)
-                } else {
-                    window.orderFrontRegardless()
-                }
-            }
+    private func closeOverlayOnCurrentScreen() {
+        guard let screen = currentScreen() else {
+            destroyOverlayWindows()
+            return
         }
 
-        let staleIDs = Set(overlayWindows.keys).subtracting(currentIDs)
-        for id in staleIDs {
+        let id = screenID(for: screen)
+        if let window = overlayWindows[id] {
+            window.delegate = nil
+            window.orderOut(nil)
+            window.close()
+            overlayWindows.removeValue(forKey: id)
+        } else {
+            destroyOverlayWindows()
+        }
+    }
+
+    private func closeStaleWindowsForDisconnectedDisplays() {
+        let validIDs = Set(NSScreen.screens.map(screenID(for:)))
+        for id in Set(overlayWindows.keys).subtracting(validIDs) {
             if let window = overlayWindows[id] {
                 window.delegate = nil
                 window.orderOut(nil)
@@ -119,23 +226,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func bringWindowsToFront() {
+    private func destroyOverlayWindows() {
+        for window in overlayWindows.values {
+            window.delegate = nil
+            window.orderOut(nil)
+            window.close()
+        }
+        overlayWindows.removeAll()
+    }
+
+    private func bringWindowsToFront(activateApp: Bool) {
         for (id, window) in overlayWindows {
             if let screen = NSScreen.screens.first(where: { screenID(for: $0) == id }) {
                 position(window, on: screen)
             }
-            window.orderFrontRegardless()
+            applyStealthMode(to: window)
+            present(window, activateApp: activateApp)
         }
-        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func applyStealthMode(to window: NSWindow) {
+        guard NSApp.windows.contains(window) else { return }
+        window.sharingType = .none
+    }
+
+    private func present(_ window: NSWindow, activateApp: Bool) {
+        applyStealthMode(to: window)
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        window.orderFrontRegardless()
+
+        if activateApp {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func makeOverlayWindow(for screen: NSScreen) -> NSWindow {
         let content = GlassRootView(model: viewModel)
         let hostingView = NSHostingView(rootView: content)
 
-        let window = NSWindow(
+        let window = GlassOverlayPanel(
             contentRect: frame(for: screen),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -147,15 +279,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isOpaque = false
         window.hasShadow = true
         window.hidesOnDeactivate = false
+        window.isFloatingPanel = true
+        window.becomesKeyOnlyIfNeeded = true
         window.level = .statusBar
         window.sharingType = .none
-        window.collectionBehavior = [.fullScreenAuxiliary, .canJoinAllSpaces, .stationary]
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace, .transient, .ignoresCycle]
         window.contentView = hostingView
         window.delegate = self
         window.standardWindowButton(.closeButton)?.target = self
         window.standardWindowButton(.closeButton)?.action = #selector(closeGlassWindow(_:))
         position(window, on: screen)
         return window
+    }
+
+    private func currentScreen() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     private func position(_ window: NSWindow, on screen: NSScreen) {
@@ -180,5 +320,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return number.stringValue
         }
         return "\(screen.localizedName)-\(screen.frame.debugDescription)"
+    }
+
+    private func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
+    }
+}
+
+final class GlassOverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+private func fourCharCode(_ string: StaticString) -> OSType {
+    string.withUTF8Buffer { buffer in
+        buffer.reduce(0) { ($0 << 8) + OSType($1) }
     }
 }

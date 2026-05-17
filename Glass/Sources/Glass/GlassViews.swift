@@ -5,6 +5,7 @@ struct GlassRootView: View {
     @ObservedObject var model: GlassViewModel
     @State private var isShowingSettings = false
     @State private var isTranscriptVisible = false
+    @State private var isShowingModelPicker = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -34,11 +35,11 @@ struct GlassRootView: View {
 
                     Spacer(minLength: 24)
                 }
+
+                if isShowingSettings {
+                    inlineSettingsOverlay
+                }
             }
-        }
-        .sheet(isPresented: $isShowingSettings) {
-            SettingsView(model: model)
-                .frame(width: 500, height: 520)
         }
     }
 
@@ -160,7 +161,7 @@ struct GlassRootView: View {
 
                     Button {
                         Task {
-                            await model.captureScreenContext()
+                            await model.analyzeCurrentScreen()
                         }
                     } label: {
                         Image(systemName: "text.viewfinder")
@@ -222,7 +223,7 @@ struct GlassRootView: View {
                         highlighted: model.latestScreenInsight != nil
                     ) {
                         Task {
-                            await model.captureScreenContext()
+                            await model.analyzeCurrentScreen()
                         }
                     }
 
@@ -336,34 +337,11 @@ struct GlassRootView: View {
 
                 DividerLine()
 
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(model.copilotAdvice.whatToSayNext)
-                        .font(.system(size: 20, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.98))
-                        .fixedSize(horizontal: false, vertical: true)
+                CopilotHistoryView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                    Text(model.copilotAdvice.summary)
-                        .font(.system(size: 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.76))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.copilotAdvice.notes, id: \.self) { note in
-                        HStack(alignment: .top, spacing: 10) {
-                            Circle()
-                                .fill(Color.white.opacity(0.78))
-                                .frame(width: 7, height: 7)
-                                .padding(.top, 6)
-                            Text(note)
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.84))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-
-                if let latestScreenInsight = model.latestScreenInsight {
+                if let latestScreenInsight = model.latestScreenInsight,
+                   latestScreenInsight.hasRecognizedText {
                     DividerLine()
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -376,14 +354,40 @@ struct GlassRootView: View {
                     }
                 }
 
-                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 10) {
+                    if isShowingModelPicker {
+                        ModelSelectionPopover(
+                            model: model,
+                            isVisible: $isShowingModelPicker
+                        )
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
 
-                HStack {
-                    StatusPill(text: model.statusText, symbol: "dot.radiowaves.left.and.right")
-                    StatusPill(text: model.modelLine, symbol: "brain.head.profile")
-                    Spacer()
+                    HStack {
+                        StatusPill(text: model.statusText, symbol: "dot.radiowaves.left.and.right")
+                        ModelSelectionButton(
+                            model: model,
+                            isVisible: $isShowingModelPicker
+                        )
+                        Spacer()
+                    }
                 }
             }
+        }
+    }
+
+    private var inlineSettingsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.34)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    isShowingSettings = false
+                }
+
+            SettingsView(model: model) {
+                isShowingSettings = false
+            }
+            .frame(width: 560, height: 650)
         }
     }
 
@@ -410,8 +414,9 @@ struct GlassRootView: View {
     }
 
     private var discussionTitle: String {
-        if let latestScreenHeadline = model.latestScreenInsight?.headline,
-           latestScreenHeadline != "No text found on the last screen scan." {
+        if let latestScreenInsight = model.latestScreenInsight,
+           latestScreenInsight.hasRecognizedText {
+            let latestScreenHeadline = latestScreenInsight.headline
             return "Discussion about \(latestScreenHeadline.glassTopicSeed)"
         }
 
@@ -435,8 +440,9 @@ struct GlassRootView: View {
     }
 
     private var searchPromptLabel: String {
-        if let latestScreenHeadline = model.latestScreenInsight?.headline,
-           latestScreenHeadline != "No text found on the last screen scan." {
+        if let latestScreenInsight = model.latestScreenInsight,
+           latestScreenInsight.hasRecognizedText {
+            let latestScreenHeadline = latestScreenInsight.headline
             return latestScreenHeadline
         }
 
@@ -451,7 +457,7 @@ struct GlassRootView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: GlassViewModel
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -465,7 +471,7 @@ struct SettingsView: View {
                 }
                 Spacer()
                 Button {
-                    dismiss()
+                    onClose()
                 } label: {
                     Image(systemName: "xmark")
                         .frame(width: 30, height: 30)
@@ -500,12 +506,14 @@ struct SettingsView: View {
                 Text("Text Model")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
-                Picker("Text Model", selection: $model.selectedTextModel) {
-                    ForEach(OpenAITextModel.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
+                SelectionOptionGrid(
+                    options: OpenAITextModel.allCases,
+                    selectedOption: model.selectedTextModel,
+                    title: \.title,
+                    subtitle: \.subtitle
+                ) { option in
+                    model.selectTextModel(option)
                 }
-                .pickerStyle(.menu)
                 Text(model.selectedTextModel.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -515,13 +523,16 @@ struct SettingsView: View {
                 Text("Thinking Capacity")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
-                Picker("Thinking Capacity", selection: $model.selectedReasoningEffort) {
-                    ForEach(OpenAIReasoningEffort.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
+                SelectionOptionGrid(
+                    options: OpenAIReasoningEffort.allCases,
+                    selectedOption: model.selectedReasoningEffort,
+                    title: \.title,
+                    subtitle: nil
+                ) { option in
+                    model.selectReasoningEffort(option)
                 }
-                .pickerStyle(.menu)
-                .disabled(!model.selectedTextModel.supportsReasoningEffort)
+                .opacity(model.selectedTextModel.supportsReasoningEffort ? 1 : 0.55)
+                .allowsHitTesting(model.selectedTextModel.supportsReasoningEffort)
                 Text(model.selectedTextModel.supportsReasoningEffort
                      ? "Applied to GPT-5 family meeting copilot responses."
                      : "This model uses standard inference, so thinking capacity is ignored.")
@@ -533,9 +544,12 @@ struct SettingsView: View {
                 Button("Request Screen Access") {
                     model.requestScreenRecordingAccess()
                 }
+                Button("Relaunch Glass") {
+                    model.relaunchApplication()
+                }
                 Button("Save Settings") {
                     if model.saveSettings() {
-                        dismiss()
+                        onClose()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -545,12 +559,15 @@ struct SettingsView: View {
             Spacer()
         }
         .padding(24)
-        .onChange(of: model.selectedTextModel) { _, _ in
-            model.saveModelPreferences()
-        }
-        .onChange(of: model.selectedReasoningEffort) { _, _ in
-            model.saveModelPreferences()
-        }
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color(red: 0.11, green: 0.11, blue: 0.13).opacity(0.98))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+        )
+        .shadow(color: .black.opacity(0.32), radius: 28, y: 18)
     }
 }
 
@@ -696,12 +713,17 @@ struct ActionListButton: View {
 struct StatusPill: View {
     let text: String
     let symbol: String
+    var showsDisclosureIndicator = false
 
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: symbol)
             Text(text)
                 .lineLimit(1)
+            if showsDisclosureIndicator {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
         }
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(.white.opacity(0.74))
@@ -713,6 +735,235 @@ struct StatusPill: View {
                 .overlay(
                     Capsule(style: .continuous)
                         .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
+    }
+}
+
+struct ModelSelectionButton: View {
+    @ObservedObject var model: GlassViewModel
+    @Binding var isVisible: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.88)) {
+                isVisible.toggle()
+            }
+        } label: {
+            StatusPill(
+                text: model.modelLine,
+                symbol: "brain.head.profile",
+                showsDisclosureIndicator: true
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ModelSelectionPopover: View {
+    @ObservedObject var model: GlassViewModel
+    @Binding var isVisible: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Model Controls")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.82))
+                Spacer()
+                Button {
+                    isVisible = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Text Model")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.52))
+                SelectionOptionGrid(
+                    options: OpenAITextModel.allCases,
+                    selectedOption: model.selectedTextModel,
+                    title: \.title,
+                    subtitle: nil
+                ) { option in
+                    model.selectTextModel(option)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Thinking Capacity")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.52))
+                SelectionOptionGrid(
+                    options: OpenAIReasoningEffort.allCases,
+                    selectedOption: model.selectedReasoningEffort,
+                    title: \.title,
+                    subtitle: nil
+                ) { option in
+                    model.selectReasoningEffort(option)
+                }
+                .opacity(model.selectedTextModel.supportsReasoningEffort ? 1 : 0.55)
+                .allowsHitTesting(model.selectedTextModel.supportsReasoningEffort)
+            }
+        }
+        .padding(14)
+        .frame(width: 320, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+        )
+        .shadow(color: .black.opacity(0.34), radius: 22, y: 14)
+    }
+}
+
+struct SelectionOptionGrid<Option: Identifiable & Equatable>: View {
+    let options: [Option]
+    let selectedOption: Option
+    let title: KeyPath<Option, String>
+    let subtitle: KeyPath<Option, String>?
+    let onSelect: (Option) -> Void
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            ForEach(options) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(option[keyPath: title])
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.94))
+                            Spacer(minLength: 0)
+                            if option == selectedOption {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.white.opacity(0.86))
+                            }
+                        }
+
+                        if let subtitle {
+                            Text(option[keyPath: subtitle])
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.54))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(option == selectedOption ? Color.white.opacity(0.16) : Color.white.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(option == selectedOption ? Color.white.opacity(0.18) : Color.white.opacity(0.08), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+struct CopilotHistoryView: View {
+    @ObservedObject var model: GlassViewModel
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if model.copilotHistory.isEmpty {
+                        CopilotResponseCard(
+                            entry: CopilotResponseEntry(
+                                advice: model.copilotAdvice,
+                                createdAt: Date()
+                            ),
+                            isPlaceholder: true
+                        )
+                    } else {
+                        ForEach(model.copilotHistory) { entry in
+                            CopilotResponseCard(entry: entry)
+                                .id(entry.id)
+                        }
+                    }
+                }
+                .padding(.trailing, 4)
+            }
+            .onChange(of: model.copilotHistory.count) { _, _ in
+                guard let lastID = model.copilotHistory.last?.id else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+struct CopilotResponseCard: View {
+    let entry: CopilotResponseEntry
+    var isPlaceholder = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(isPlaceholder ? "Waiting for live context" : "AI update")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.74))
+
+                Spacer()
+
+                Text(isPlaceholder ? "Preview" : entry.timeLabel)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            Text(entry.advice.whatToSayNext)
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.98))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(entry.advice.summary)
+                .font(.system(size: 15, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.76))
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(entry.advice.notes, id: \.self) { note in
+                    HStack(alignment: .top, spacing: 10) {
+                        Circle()
+                            .fill(Color.white.opacity(0.78))
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 6)
+                        Text(note)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.white.opacity(isPlaceholder ? 0.05 : 0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color.white.opacity(isPlaceholder ? 0.08 : 0.12), lineWidth: 1)
                 )
         )
     }

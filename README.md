@@ -55,6 +55,15 @@ cp -R Glass/build/Glass.app /Applications/Glass.app
 open -a /Applications/Glass.app
 ```
 
+## Controls
+
+- `⌘U`: open Glass on the currently active screen/space and analyze that screen
+- `⌘I`: hide Glass from the current screen/space without quitting the app
+- `⌘↵`: force an immediate AI refresh
+- `⌘\`: show or hide the transcript
+- `Settings → Request Screen Access`: ask macOS for Screen Recording permission
+- `Settings → Relaunch Glass`: restart the app after granting Screen Recording so the permission takes effect
+
 ## Permissions
 
 Glass may ask for:

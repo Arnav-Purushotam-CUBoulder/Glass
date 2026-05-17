@@ -10,27 +10,19 @@ struct GlassRootView: View {
     var body: some View {
         GeometryReader { proxy in
             let horizontalPadding: CGFloat = 34
-            let interPanelSpacing: CGFloat = 18
-            let availableWidth = max(680, proxy.size.width - (horizontalPadding * 2))
-            let leftWidth = min(720, max(360, availableWidth * 0.53))
-            let rightWidth = max(280, availableWidth - leftWidth - interPanelSpacing)
-            let controlBarWidth = min(720, max(380, availableWidth * 0.52))
+            let availableWidth = max(560, proxy.size.width - (horizontalPadding * 2))
+            let panelWidth = min(920, max(560, availableWidth - 60))
+            let controlBarWidth = min(760, max(420, panelWidth * 0.82))
 
             ZStack(alignment: .top) {
                 overlayGlowLayer
 
                 VStack(spacing: 24) {
-                    HStack {
-                        Spacer()
-                        floatingControlBar(width: controlBarWidth)
-                    }
+                    floatingControlBar(width: controlBarWidth)
                     .padding(.top, 18)
-                    .padding(.trailing, max(34, horizontalPadding + 12))
+                    .frame(maxWidth: .infinity, alignment: .center)
 
-                    HStack(alignment: .top, spacing: interPanelSpacing) {
-                        liveInsightsPanel(width: leftWidth)
-                        aiResponsePanel(width: rightWidth)
-                    }
+                    aiResponsePanel(width: panelWidth)
                     .padding(.horizontal, horizontalPadding)
 
                     Spacer(minLength: 24)
@@ -140,22 +132,19 @@ struct GlassRootView: View {
                             )
                         )
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                )
         }
         .shadow(color: .black.opacity(0.34), radius: 28, y: 18)
     }
 
-    private func liveInsightsPanel(width: CGFloat) -> some View {
+    private func aiResponsePanel(width: CGFloat) -> some View {
         DarkGlassPanel(width: width) {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .center, spacing: 12) {
-                    Label("Live insights", systemImage: "sparkles")
+                    Text("AI response")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(.white)
-                        .labelStyle(LeadingIconLabelStyle())
+
+                    searchPromptPill
 
                     Spacer()
 
@@ -165,8 +154,8 @@ struct GlassRootView: View {
                         }
                     } label: {
                         Image(systemName: "text.viewfinder")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.88))
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.84))
                     }
                     .buttonStyle(.plain)
 
@@ -175,72 +164,38 @@ struct GlassRootView: View {
                             isTranscriptVisible.toggle()
                         }
                     } label: {
-                        Label(isTranscriptVisible ? "Hide transcript" : "Show transcript", systemImage: "captions.bubble")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9))
+                        Image(systemName: isTranscriptVisible ? "captions.bubble.fill" : "captions.bubble")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        isShowingSettings = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.82))
                     }
                     .buttonStyle(.plain)
                 }
 
                 DividerLine()
 
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(discussionTitle)
-                        .font(.system(size: 27, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+                CopilotHistoryView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                    Text(model.copilotAdvice.summary)
-                        .font(.system(size: 17, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.88))
-                        .fixedSize(horizontal: false, vertical: true)
+                if let latestScreenInsight = model.latestScreenInsight,
+                   latestScreenInsight.hasRecognizedText {
+                    DividerLine()
 
-                    if let latestMeetingLine {
-                        Text(latestMeetingLine)
-                            .font(.system(size: 15, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Actions")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-
-                    ActionListButton(
-                        title: "Ask AI for a sharper answer",
-                        symbol: "sparkles",
-                        highlighted: model.isRefreshingCopilot
-                    ) {
-                        Task {
-                            await model.refreshCopilotNow()
-                        }
-                    }
-
-                    ActionListButton(
-                        title: "Scan the shared screen for more context",
-                        symbol: "globe",
-                        highlighted: model.latestScreenInsight != nil
-                    ) {
-                        Task {
-                            await model.analyzeCurrentScreen()
-                        }
-                    }
-
-                    ActionListButton(
-                        title: isTranscriptVisible ? "Hide the live transcript" : "Show the live transcript",
-                        symbol: "text.bubble"
-                    ) {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
-                            isTranscriptVisible.toggle()
-                        }
-                    }
-
-                    ActionListButton(
-                        title: "Open settings and controls",
-                        symbol: "slider.horizontal.3"
-                    ) {
-                        isShowingSettings = true
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Screen context")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.62))
+                        Text(latestScreenInsight.headline)
+                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.84))
                     }
                 }
 
@@ -300,59 +255,6 @@ struct GlassRootView: View {
                         .foregroundStyle(Color.red.opacity(0.92))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-        }
-    }
-
-    private func aiResponsePanel(width: CGFloat) -> some View {
-        DarkGlassPanel(width: width) {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(alignment: .center, spacing: 12) {
-                    Text("AI response")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white)
-
-                    searchPromptPill
-
-                    Spacer()
-
-                    Button {
-                        model.refreshPermissions()
-                    } label: {
-                        Image(systemName: "rectangle.3.group")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.84))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        isShowingSettings = true
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 19, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                DividerLine()
-
-                CopilotHistoryView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-                if let latestScreenInsight = model.latestScreenInsight,
-                   latestScreenInsight.hasRecognizedText {
-                    DividerLine()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Screen context")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.62))
-                        Text(latestScreenInsight.headline)
-                            .font(.system(size: 14, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.84))
-                    }
-                }
 
                 VStack(alignment: .trailing, spacing: 10) {
                     if isShowingModelPicker {
@@ -411,32 +313,6 @@ struct GlassRootView: View {
                         .stroke(Color.white.opacity(0.16), lineWidth: 1)
                 )
         )
-    }
-
-    private var discussionTitle: String {
-        if let latestScreenInsight = model.latestScreenInsight,
-           latestScreenInsight.hasRecognizedText {
-            let latestScreenHeadline = latestScreenInsight.headline
-            return "Discussion about \(latestScreenHeadline.glassTopicSeed)"
-        }
-
-        if let meetingLine = model.transcriptSegments.last(where: { $0.source == .systemAudio })?.text,
-           !meetingLine.isEmpty {
-            return "Discussion about \(meetingLine.glassTopicSeed)"
-        }
-
-        if model.isMeetingActive {
-            return "Conversation in progress"
-        }
-
-        return "Waiting for discussion"
-    }
-
-    private var latestMeetingLine: String? {
-        if !model.liveSystemText.isEmpty {
-            return model.liveSystemText
-        }
-        return model.transcriptSegments.last(where: { $0.source == .systemAudio })?.text
     }
 
     private var searchPromptLabel: String {
@@ -595,10 +471,6 @@ struct DarkGlassPanel<Content: View>: View {
                                     endPoint: .bottomTrailing
                                 )
                             )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 30, style: .continuous)
-                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
                     )
             }
             .shadow(color: .black.opacity(0.35), radius: 28, y: 18)

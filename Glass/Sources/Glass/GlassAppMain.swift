@@ -402,6 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.title = "Glass"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         window.isOpaque = false
@@ -445,9 +446,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let visible = screen.visibleFrame
         let horizontalInset: CGFloat = 24
         let verticalInset: CGFloat = 26
-        let targetWidth = min(1480, visible.width - horizontalInset * 2)
-        let width = min(visible.width - 12, max(700, targetWidth))
-        let targetHeight = min(860, visible.height - 56)
+        let targetWidth = min(980, visible.width - horizontalInset * 2)
+        let width = min(visible.width - 12, max(620, targetWidth))
+        let targetHeight = min(820, visible.height - 56)
         let height = min(visible.height - 12, max(560, targetHeight))
         let x = visible.midX - (width / 2)
         let y = visible.maxY - height - verticalInset

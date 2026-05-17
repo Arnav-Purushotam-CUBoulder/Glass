@@ -45,10 +45,3 @@ body:
       label: Relevant Log Output
       description: Please copy and paste any relevant console logs, error messages, or native module output here.
       render: shell
-  - type: checkboxes
-    id: terms
-    attributes:
-      label: Code of Conduct
-      options:
-        - label: I agree to follow this project's Code of Conduct
-          required: true

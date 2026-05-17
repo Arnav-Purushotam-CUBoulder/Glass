@@ -87,18 +87,6 @@ Because the overlay is intentionally excluded from screen capture, some automati
 
 See [PRIVACY.md](./PRIVACY.md) for the current repo policy.
 
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-## Security
-
-See [SECURITY.md](./SECURITY.md).
-
-## License
-
-This repository remains licensed under [AGPL-3.0](./LICENSE).
-
 ## Status
 
 Glass is actively being rebuilt as a standalone native macOS app. Expect rapid iteration.

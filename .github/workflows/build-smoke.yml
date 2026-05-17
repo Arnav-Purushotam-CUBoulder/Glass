@@ -5,27 +5,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  electron-entry-smoke:
+  swift-build:
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Swift
+        uses: swift-actions/setup-swift@v2
         with:
-          node-version: 22
-          cache: npm
+          swift-version: "5.10"
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Build package
+        run: swift build --package-path Glass -c release
 
-      - name: Build renderer
-        run: npm run build
+      - name: Build app bundle
+        run: ./Glass/BuildSupport/build-app.sh
 
-      - name: Build Electron main process
-        run: npm run build:electron
-
-      - name: Verify packaged entrypoint exists
-        run: test -f dist-electron/electron/main.js
+      - name: Verify packaged app exists
+        run: test -f Glass/build/Glass.app/Contents/MacOS/Glass

@@ -9,7 +9,7 @@
 	<key>CFBundleIconFile</key>
 	<string>Glass</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.natively.glass</string>
+	<string>com.arnavpurushotam.glass</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

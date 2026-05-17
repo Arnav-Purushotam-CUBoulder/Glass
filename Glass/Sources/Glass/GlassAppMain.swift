@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var openHotKeyRef: EventHotKeyRef?
     private var closeHotKeyRef: EventHotKeyRef?
     private var responseHotKeyRef: EventHotKeyRef?
+    private var meetingHotKeyRef: EventHotKeyRef?
     private var moveUpHotKeyRef: EventHotKeyRef?
     private var moveLeftHotKeyRef: EventHotKeyRef?
     private var moveDownHotKeyRef: EventHotKeyRef?
@@ -33,10 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let openHotKeyIdentifier: UInt32 = 1
     private let closeHotKeyIdentifier: UInt32 = 2
     private let responseHotKeyIdentifier: UInt32 = 3
-    private let moveUpHotKeyIdentifier: UInt32 = 4
-    private let moveLeftHotKeyIdentifier: UInt32 = 5
-    private let moveDownHotKeyIdentifier: UInt32 = 6
-    private let moveRightHotKeyIdentifier: UInt32 = 7
+    private let meetingHotKeyIdentifier: UInt32 = 4
+    private let moveUpHotKeyIdentifier: UInt32 = 5
+    private let moveLeftHotKeyIdentifier: UInt32 = 6
+    private let moveDownHotKeyIdentifier: UInt32 = 7
+    private let moveRightHotKeyIdentifier: UInt32 = 8
     private let requiredHotKeyModifiers: NSEvent.ModifierFlags = [.control, .option, .command]
     private let carbonHotKeyModifiers: UInt32 = UInt32(controlKey | optionKey | cmdKey)
     private let overlayNudgeStep: CGFloat = 48
@@ -139,6 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "r":
                 self.requestAIResponseForCurrentMeeting()
                 return nil
+            case "f":
+                self.toggleMeetingForCurrentScreen()
+                return nil
             case "w":
                 self.moveOverlayOnCurrentScreen(deltaX: 0, deltaY: self.overlayNudgeStep)
                 return nil
@@ -170,6 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             keyCode: UInt32(kVK_ANSI_R),
             modifiers: carbonHotKeyModifiers,
             identifier: responseHotKeyIdentifier
+        )
+        meetingHotKeyRef = registerHotKey(
+            keyCode: UInt32(kVK_ANSI_F),
+            modifiers: carbonHotKeyModifiers,
+            identifier: meetingHotKeyIdentifier
         )
         moveUpHotKeyRef = registerHotKey(
             keyCode: UInt32(kVK_ANSI_W),
@@ -216,6 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             closeOverlayOnCurrentScreen()
         case responseHotKeyIdentifier:
             requestAIResponseForCurrentMeeting()
+        case meetingHotKeyIdentifier:
+            toggleMeetingForCurrentScreen()
         case moveUpHotKeyIdentifier:
             moveOverlayOnCurrentScreen(deltaX: 0, deltaY: overlayNudgeStep)
         case moveLeftHotKeyIdentifier:
@@ -269,6 +281,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.viewModel.refreshCopilotNow()
+        }
+    }
+
+    private func toggleMeetingForCurrentScreen() {
+        if overlayWindows.isEmpty {
+            openOverlayOnCurrentScreen(triggerAnalysis: false, activateApp: false)
+        } else if let screen = currentScreen(),
+                  overlayWindows[screenID(for: screen)] == nil {
+            openOverlayOnCurrentScreen(triggerAnalysis: false, activateApp: false)
+        }
+
+        if let screen = currentScreen() {
+            viewModel.setFocusedDisplayID(displayID(for: screen))
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.viewModel.toggleMeeting()
         }
     }
 

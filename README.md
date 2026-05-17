@@ -60,6 +60,7 @@ open -a /Applications/Glass.app
 - `⌃⌥⌘E`: open Glass on the currently active screen/space and collect context for that screen
 - `⌃⌥⌘Q`: hide Glass from the current screen/space without quitting the app
 - `⌃⌥⌘R`: generate an AI response from the meeting context collected so far
+- `⌃⌥⌘F`: start or stop meeting context collection
 - `⌃⌥⌘W`: move Glass up
 - `⌃⌥⌘A`: move Glass left
 - `⌃⌥⌘S`: move Glass down
